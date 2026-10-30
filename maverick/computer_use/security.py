@@ -90,8 +90,11 @@ class ComputerUseSecurity:
             if kw in text_rep:
                 return ActionTier.SENSITIVE
 
-        # File write or destructive parameter checks
-        if action_name in ("filesystem_write_file", "file_delete", "file_overwrite"):
+        # Terminal, file write, or sensitive action checks
+        if target_app in ("gnome-terminal", "terminal") or action_name in (
+            "terminal_launch", "terminal_command", "shell_execute",
+            "filesystem_write_file", "file_delete", "file_overwrite"
+        ):
             return ActionTier.SENSITIVE
 
         return ActionTier.NORMAL

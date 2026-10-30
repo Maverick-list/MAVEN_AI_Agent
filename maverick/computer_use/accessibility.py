@@ -209,7 +209,7 @@ class AccessibilityBridge:
                         results=results,
                         max_results=max_results,
                         depth=0,
-                        max_depth=7,
+                        max_depth=16,
                     )
             except Exception:
                 continue
