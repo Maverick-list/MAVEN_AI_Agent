@@ -706,10 +706,33 @@ def main() -> None:
     dash_parser.add_argument("--port", type=int, default=8765, help="Localhost port (default: 8765)")
     dash_parser.add_argument("--open", action="store_true", help="Open dashboard in default browser")
 
+    # 11. Desktop application command parser
+    desktop_parser = subparsers.add_parser(
+        "desktop",
+        aliases=["gui"],
+        help="Launch standalone native Linux desktop application shell for Maven JARVIS",
+        parents=[base_parser],
+    )
+    desktop_parser.add_argument(
+        "--url",
+        default="http://127.0.0.1:8765",
+        help="Backend Control Center URL (default: http://127.0.0.1:8765)",
+    )
+    desktop_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Localhost port override (if specified, connects to http://127.0.0.1:<port>)",
+    )
+
     args = parser.parse_args()
 
     if args.command in ("app", "apps"):
         handle_app_commands(args)
+    elif args.command in ("desktop", "gui"):
+        from maverick.desktop.app import run_desktop_app
+        url = f"http://127.0.0.1:{args.port}" if args.port else args.url
+        sys.exit(run_desktop_app(backend_url=url))
     elif args.command == "spotify":
         handle_spotify_commands(args)
     elif args.command == "browser":

@@ -1,0 +1,22 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=Maven JARVIS
+GenericName=AI Desktop Assistant
+Comment=Ambient Multimodal AI Desktop Assistant & Holographic Control Center
+Exec=/home/firza-ilmi/.local/bin/maven-jarvis
+Icon=maven-jarvis
+Terminal=false
+Categories=Utility;Development;AudioVideo;
+Keywords=maven;jarvis;ai;assistant;voice;vision;gestures;control;
+StartupNotify=true
+StartupWMClass=com.maverick.maven.jarvis
+Actions=NormalMode;VisionMode;
+
+[Desktop Action NormalMode]
+Name=Normal Mode (Physical Input)
+Exec=python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/vision/mode/deactivate', data=b'{}')"
+
+[Desktop Action VisionMode]
+Name=Vision Mode (Hand Gestures)
+Exec=python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/vision/mode/activate', data=b'{}')"

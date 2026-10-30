@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Maven JARVIS - Native Linux Desktop Application Launcher
+set -e
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+
+# Prioritize repository if running from source checkout, else fallback to standard python module paths
+if [[ -d "${REPO_DIR}/maverick" ]]; then
+    export PYTHONPATH="${REPO_DIR}:${PYTHONPATH}"
+elif [[ -d "/opt/maven-jarvis" ]]; then
+    export PYTHONPATH="/opt/maven-jarvis:${PYTHONPATH}"
+fi
+
+# Ensure XDG and display environments are passed
+export GDK_BACKEND="wayland,x11"
+export WEBKIT_DISABLE_COMPOSITING_MODE=0
+
+exec python3 -m maverick.desktop.app "$@"
