@@ -19,6 +19,7 @@ from maverick.desktop.launcher import launch_app
 from maverick.intelligence.memory import ContextMemory
 from maverick.intelligence.planner import TaskPlan, TaskPlanner, TaskStatus
 from maverick.media.spotify import SpotifyController
+from maverick.vision.vision_controller import VisionController
 from maverick.system.monitor import (
     get_battery_status,
     get_cpu_usage,
@@ -163,6 +164,7 @@ class VoiceController:
         self.memory = ContextMemory()
         self.planner = TaskPlanner(memory=self.memory)
         self.active_plan: Optional[TaskPlan] = None
+        self.vision = VisionController()
 
     @staticmethod
     def _build_voice_system_prompt(user_prompt: str, default_max_tokens: int = 140) -> Tuple[str, int, str]:
@@ -690,6 +692,19 @@ class VoiceController:
         is_id = parsed.get("is_id", False)
 
         if not intent or intent in ("empty", "unhandled"):
+            # Check vision / pointer multimodal directive
+            if self.vision:
+                vis_res = self.vision.handle_multimodal_command(cmd)
+                if vis_res:
+                    voice_logger.intent_classified(
+                        intent=vis_res.get("action", "vision_action"),
+                        target=None,
+                        lang="id" if is_id else "en",
+                        confidence=0.95,
+                        clean_text=cmd,
+                    )
+                    return vis_res
+
             voice_logger.intent_classified(
                 intent="unhandled",
                 target=None,

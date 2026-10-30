@@ -41,7 +41,9 @@
     <div class="dual-wake-cluster">
       <span class="mini-pill ok" id="pill-wake-word">WAKE: ARMED</span>
       <span class="mini-pill ok" id="pill-dual-clap">CLAP: ARMED</span>
+      <span class="mini-pill warn" id="pill-vision-mode">VISION: PRIVACY</span>
       <button type="button" class="mini-pill mute-toggle" id="btn-emergency-mute" title="Instant Privacy / Hardware Audio Mute">MIC: ACTIVE</button>
+      <button type="button" class="mini-pill muted" id="btn-gesture-estop" style="cursor: pointer;" title="Instant Gesture & Mouse Emergency Stop">🛑 E-STOP</button>
     </div>
 
     <div class="top-meta">
@@ -120,6 +122,40 @@
           </div>
         </div>
         <div class="card-foot-note" id="whisper-stt-line">STT: Whisper.cpp checking...</div>
+      </section>
+
+      <!-- 4. Vision & Gesture Intelligence HUD -->
+      <section class="glass-card" id="card-vision-hud">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">VISION & GESTURES:</h2>
+            <p class="card-primary-value" id="vision-mode-title">PRIVACY MODE</p>
+            <p class="card-subline" id="vision-fps-line">CAMERA OFF · 0 FPS</p>
+          </div>
+          <span class="mini-badge" id="vision-status-badge">STANDBY</span>
+        </div>
+        <div class="vision-telemetry-row">
+          <div class="gesture-display">
+            <span class="gesture-label">GESTURE:</span>
+            <span class="gesture-name" id="vision-gesture-name">NONE</span>
+          </div>
+          <div class="gesture-conf-wrap">
+            <div class="gesture-conf-bar">
+              <div class="gesture-conf-fill" id="vision-conf-fill" style="width: 0%;"></div>
+            </div>
+            <span class="gesture-conf-val" id="vision-conf-val">0%</span>
+          </div>
+        </div>
+        <div class="vision-coords-row">
+          <span class="vision-coords-label">POINTER:</span>
+          <span class="vision-coords-val" id="vision-coords-val">X: -- | Y: --</span>
+          <span class="vision-hand-label" id="vision-hand-label">HAND: NONE</span>
+        </div>
+        <div class="vision-actions-bar">
+          <button type="button" class="ghost-chip" id="btn-toggle-vision" title="Cycle Vision Modes">TOGGLE MODE</button>
+          <button type="button" class="ghost-chip chip-warn" id="btn-calibrate-vision" title="Calibrate Neutral Hand Box">CALIBRATE</button>
+          <button type="button" class="ghost-chip chip-danger" id="btn-vision-estop" title="Emergency Stop Gestures">E-STOP</button>
+        </div>
       </section>
     </aside>
 

@@ -1376,6 +1376,115 @@ input[type="range"] {
   font-size: 0.8rem;
 }
 
+/* VISION & GESTURES HUD */
+.vision-telemetry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 10px 0 6px 0;
+  padding: 6px 10px;
+  background: rgba(3, 9, 22, 0.65);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  border-radius: 6px;
+}
+
+.gesture-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gesture-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.08em;
+}
+
+.gesture-name {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--cyan);
+  text-shadow: 0 0 6px rgba(0, 240, 255, 0.5);
+  letter-spacing: 0.05em;
+}
+
+.gesture-conf-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gesture-conf-bar {
+  width: 72px;
+  height: 8px;
+  background: rgba(125, 211, 252, 0.1);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gesture-conf-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #0284c7 0%, #00f0ff 100%);
+  box-shadow: 0 0 6px rgba(0, 240, 255, 0.7);
+  transition: width 0.15s ease-out;
+}
+
+.gesture-conf-val {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: #e2e8f0;
+  min-width: 32px;
+  text-align: right;
+}
+
+.vision-coords-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+}
+
+.vision-coords-val {
+  color: #7dd3fc;
+}
+
+.vision-hand-label {
+  color: #a78bfa;
+}
+
+.vision-actions-bar {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ghost-chip.chip-warn {
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+}
+
+.ghost-chip.chip-warn:hover {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: #f59e0b;
+}
+
+.ghost-chip.chip-danger {
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #f87171;
+}
+
+.ghost-chip.chip-danger:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+}
+
 /* RESPONSIVE BREAKPOINTS */
 @media (max-width: 1260px) {
   body {

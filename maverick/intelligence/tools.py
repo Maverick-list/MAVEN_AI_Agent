@@ -278,6 +278,61 @@ class ToolRegistry:
             handler=self._tool_memory_recall,
         ))
 
+        # 10. Virtual Mouse Cursor Movement
+        self.register(ToolDefinition(
+            name="desktop_move_cursor",
+            description="Move desktop cursor to screen pixel coordinate (x, y).",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "Horizontal pixel coordinate"},
+                    "y": {"type": "integer", "description": "Vertical pixel coordinate"},
+                },
+                "required": ["x", "y"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_desktop_move_cursor,
+        ))
+
+        # 11. Desktop Click Semantic Target
+        self.register(ToolDefinition(
+            name="desktop_click_target",
+            description="Locate a visible button, field, or menu on screen and click its center.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "target_name": {"type": "string", "description": "Name or text of the target UI element"},
+                },
+                "required": ["target_name"],
+            },
+            risk=ToolRisk.CONSEQUENTIAL,
+            handler=self._tool_desktop_click_target,
+        ))
+
+        # 12. Desktop Scroll Wheel
+        self.register(ToolDefinition(
+            name="desktop_scroll",
+            description="Scroll desktop view up or down.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "delta_lines": {"type": "integer", "description": "Positive for up, negative for down"},
+                },
+                "required": ["delta_lines"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_desktop_scroll,
+        ))
+
+        # 13. Desktop Emergency Stop
+        self.register(ToolDefinition(
+            name="desktop_emergency_stop",
+            description="Immediately halt all mouse automation and release held buttons.",
+            parameters_schema={"type": "object"},
+            risk=ToolRisk.CRITICAL,
+            handler=self._tool_desktop_emergency_stop,
+        ))
+
     # --- Tool Handlers ---
 
     def _tool_desktop_launch_app(self, params: Dict[str, Any], confirmed: bool = False) -> Dict[str, Any]:
@@ -380,3 +435,38 @@ class ToolRegistry:
                 limit=params.get("limit", 5),
             )
         }
+
+    def _tool_desktop_move_cursor(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        x = int(params.get("x", 0))
+        y = int(params.get("y", 0))
+        from maverick.vision.virtual_mouse import VirtualMouse
+        mouse = VirtualMouse()
+        ok = mouse.move_to(x, y)
+        return {"status": "success" if ok else "error", "x": x, "y": y}
+
+    def _tool_desktop_click_target(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
+        target = params.get("target_name", "")
+        from maverick.vision.screen import ScreenIntelligence
+        from maverick.vision.virtual_mouse import MouseButton, VirtualMouse
+        screen = ScreenIntelligence()
+        elem = screen.find_target(target)
+        if not elem:
+            return {"status": "not_found", "message": f"Target element '{target}' not found on visible screen."}
+        cx, cy = elem.center
+        mouse = VirtualMouse()
+        mouse.move_to(cx, cy)
+        mouse.click(MouseButton.LEFT)
+        return {"status": "success", "target": elem.name, "coords": {"x": cx, "y": cy}}
+
+    def _tool_desktop_scroll(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        delta = int(params.get("delta_lines", 0))
+        from maverick.vision.virtual_mouse import VirtualMouse
+        mouse = VirtualMouse()
+        ok = mouse.scroll(delta)
+        return {"status": "success" if ok else "error", "delta_lines": delta}
+
+    def _tool_desktop_emergency_stop(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        from maverick.vision.virtual_mouse import VirtualMouse
+        mouse = VirtualMouse()
+        mouse.emergency_stop()
+        return {"status": "success", "action": "emergency_stop", "message": "Virtual mouse and gesture automation halted."}

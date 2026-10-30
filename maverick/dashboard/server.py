@@ -45,6 +45,7 @@ from maverick.system.monitor import (
 )
 from maverick.intelligence.memory import ContextMemory
 from maverick.intelligence.planner import TaskPlan, TaskPlanner, TaskStatus
+from maverick.vision import CalibrationConfig, VisionController, VisionMode
 from maverick.voice.audio import calculate_rms, list_audio_devices
 from maverick.voice.config import VoiceConfig, save_voice_settings
 from maverick.voice.controller import VoiceController
@@ -218,6 +219,7 @@ class TelemetryHub:
         self.memory = ContextMemory()
         self.planner = TaskPlanner(memory=self.memory)
         self.active_plan: Optional[TaskPlan] = None
+        self.vision_controller: VisionController = self.controller.vision or VisionController()
         self._daemon_last_trigger: str = "wake_word"
 
         self._lock = threading.Lock()
@@ -630,6 +632,7 @@ class TelemetryHub:
                 "active_plan": self.active_plan.to_dict() if self.active_plan else None,
                 "recent_memories": self.memory.list_all(limit=6),
             },
+            "vision": self.vision_controller.get_status(),
             "conversations": self.conversations.list_recent(limit=30),
         }
 
@@ -1030,6 +1033,31 @@ class TelemetryHub:
         self.notify_change()
         return {"status": "success", "muted": bool(muted)}
 
+    def set_vision_mode(self, mode_str: str) -> Dict[str, Any]:
+        try:
+            mode = VisionMode(mode_str)
+        except ValueError:
+            return {"status": "error", "message": f"Invalid mode: {mode_str}"}
+        res = self.vision_controller.set_mode(mode)
+        self.notify_change()
+        return res
+
+    def vision_emergency_stop(self) -> Dict[str, Any]:
+        self.vision_controller.engine.mouse.emergency_stop()
+        self.notify_change()
+        return {"status": "success", "action": "emergency_stop", "message": "Vision and virtual mouse halted."}
+
+    def calibrate_vision(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        cal = self.vision_controller.engine.calibrator.config
+        if "sensitivity" in payload:
+            cal.sensitivity = float(payload["sensitivity"])
+        if "acceleration_exponent" in payload:
+            cal.acceleration_exponent = float(payload["acceleration_exponent"])
+        if "invert_x" in payload:
+            cal.invert_x = bool(payload["invert_x"])
+        self.notify_change()
+        return {"status": "success", "calibration": self.vision_controller.engine.calibrator.to_dict()}
+
 
 class ControlCenterRequestHandler(BaseHTTPRequestHandler):
     """HTTP + SSE request handler bound strictly to 127.0.0.1."""
@@ -1238,6 +1266,22 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/voice/mute":
             muted = bool(body.get("muted", False))
             res = self.hub.set_voice_mute(muted)
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/mode":
+            mode_str = str(body.get("mode", "privacy_mode"))
+            res = self.hub.set_vision_mode(mode_str)
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/emergency-stop":
+            res = self.hub.vision_emergency_stop()
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/calibrate":
+            res = self.hub.calibrate_vision(body)
             self._send_json(res)
             return
 

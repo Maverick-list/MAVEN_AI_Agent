@@ -369,6 +369,9 @@
     // 10. Autonomous Task Planning & Intelligence HUD
     renderTaskPlan(snap.intelligence?.active_plan);
 
+    // 11. Multimodal Vision & Gesture Telemetry HUD
+    renderVisionHud(snap);
+
     // Update live logs drawer if open
     const logsModal = document.getElementById("logs-modal");
     if (!logsModal.hidden) {
@@ -887,6 +890,120 @@
       showToast(newMuted ? "Hardware audio/microphone MUTED" : "Audio/microphone UNMUTED");
     } catch (err) {
       showToast(`Mute toggle failed: ${err.message}`);
+    }
+  });
+
+  // --- Multimodal Vision & Gesture Telemetry & Control ---
+  function renderVisionHud(snap) {
+    const vision = snap?.vision || {};
+    const mode = vision.mode || "privacy_mode";
+    const engine = vision.engine || {};
+    const pillMode = document.getElementById("pill-vision-mode");
+    const modeTitle = document.getElementById("vision-mode-title");
+    const fpsLine = document.getElementById("vision-fps-line");
+    const statusBadge = document.getElementById("vision-status-badge");
+    const gestureName = document.getElementById("vision-gesture-name");
+    const confFill = document.getElementById("vision-conf-fill");
+    const confVal = document.getElementById("vision-conf-val");
+    const coordsVal = document.getElementById("vision-coords-val");
+    const handLabel = document.getElementById("vision-hand-label");
+
+    if (pillMode) {
+      const modeLabel = mode.replace("_", " ").toUpperCase();
+      pillMode.textContent = `VISION: ${modeLabel.split(" ")[0]}`;
+      if (mode === "full_assistant" || mode === "gesture_control") {
+        pillMode.className = "mini-pill ok";
+      } else if (mode === "observe_only" || mode === "voice_control") {
+        pillMode.className = "mini-pill warn";
+      } else {
+        pillMode.className = "mini-pill muted";
+      }
+    }
+
+    if (modeTitle) {
+      modeTitle.textContent = mode.replace("_", " ").toUpperCase();
+    }
+
+    if (fpsLine) {
+      if (engine.enabled) {
+        fpsLine.textContent = `CAMERA ACTIVE · ${engine.fps || 0.0} FPS`;
+      } else {
+        fpsLine.textContent = "CAMERA OFF · 0 FPS";
+      }
+    }
+
+    if (statusBadge) {
+      if (engine.emergency_stop) {
+        statusBadge.textContent = "HALTED";
+        statusBadge.className = "mini-badge warn";
+      } else if (engine.enabled) {
+        statusBadge.textContent = "ACTIVE";
+        statusBadge.className = "mini-badge ok";
+      } else {
+        statusBadge.textContent = "STANDBY";
+        statusBadge.className = "mini-badge";
+      }
+    }
+
+    if (gestureName) {
+      gestureName.textContent = (engine.gesture || "NONE").toUpperCase();
+    }
+
+    const confPct = Math.min(100, Math.max(0, Math.round((engine.confidence || 0) * 100)));
+    if (confFill) {
+      confFill.style.width = `${confPct}%`;
+    }
+    if (confVal) {
+      confVal.textContent = `${confPct}%`;
+    }
+
+    if (coordsVal) {
+      const cur = engine.cursor || {};
+      coordsVal.textContent = `X: ${cur.x ?? "--"} | Y: ${cur.y ?? "--"}`;
+    }
+
+    if (handLabel) {
+      if (engine.hand_count > 0 && engine.hands && engine.hands.length > 0) {
+        handLabel.textContent = `HAND: ${engine.hands[0].handedness || "DETECTED"}`;
+      } else {
+        handLabel.textContent = "HAND: NONE";
+      }
+    }
+  }
+
+  // --- Vision & Gesture Interaction Handlers ---
+  const visionModes = ["privacy_mode", "gesture_control", "full_assistant", "observe_only"];
+
+  async function triggerEmergencyStop() {
+    try {
+      await apiPost("/api/vision/emergency-stop");
+      showToast("🛑 EMERGENCY STOP: Virtual mouse & gestures halted");
+    } catch (err) {
+      showToast(`Emergency stop failed: ${err.message}`);
+    }
+  }
+
+  document.getElementById("btn-gesture-estop")?.addEventListener("click", triggerEmergencyStop);
+  document.getElementById("btn-vision-estop")?.addEventListener("click", triggerEmergencyStop);
+
+  document.getElementById("btn-toggle-vision")?.addEventListener("click", async () => {
+    const curMode = state.lastSnapshot?.vision?.mode || "privacy_mode";
+    const curIdx = visionModes.indexOf(curMode);
+    const nextMode = visionModes[(curIdx + 1) % visionModes.length];
+    try {
+      await apiPost("/api/vision/mode", { mode: nextMode });
+      showToast(`Vision mode switched to: ${nextMode.toUpperCase()}`);
+    } catch (err) {
+      showToast(`Failed to switch vision mode: ${err.message}`);
+    }
+  });
+
+  document.getElementById("btn-calibrate-vision")?.addEventListener("click", async () => {
+    try {
+      await apiPost("/api/vision/calibrate", { sensitivity: 1.0, acceleration_exponent: 1.35, invert_x: true });
+      showToast("Vision calibration reset to defaults");
+    } catch (err) {
+      showToast(`Calibration failed: ${err.message}`);
     }
   });
 
