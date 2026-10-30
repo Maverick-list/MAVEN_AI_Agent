@@ -1,9 +1,9 @@
 # MAVEN JARVIS — User Guide
 
-**Maverick DevOS Desktop AI Assistant**  
-**Host Workstation:** ASUS ROG Strix G16 (AMD Ryzen 9 7845HX, 16 GB RAM)  
-**Operating System:** Ubuntu Linux 26.04.1 LTS ("resolute"), GNOME Wayland  
-**Version:** Production Release 1.0 (Phase 5.3 Final)  
+**Maverick DevOS Desktop AI Assistant**
+**Host Workstation:** ASUS ROG Strix G16 (AMD Ryzen 9 7845HX, 16 GB RAM)
+**Operating System:** Ubuntu Linux 26.04.1 LTS ("resolute"), GNOME Wayland
+**Version:** Production Release 1.0 (Phase 5.3 Final)
 
 ---
 

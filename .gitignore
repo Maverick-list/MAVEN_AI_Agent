@@ -1,2 +1,16 @@
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+*.env
+*.pem
+*.key
+*.secret
+.pytest_cache/
+.coverage
+*.log
+*.pid
+

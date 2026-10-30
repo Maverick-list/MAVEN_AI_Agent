@@ -1,10 +1,10 @@
 # MAVEN JARVIS — System Architecture & Engineering Specifications
 
-**Project:** Maverick DevOS (Maven JARVIS)  
-**Host Workstation:** ASUS ROG Strix G16 (AMD Ryzen 9 7845HX, 16 Cores / 32 Threads, 16 GB DDR5 RAM)  
-**OS & Desktop:** Ubuntu Linux 26.04.1 LTS ("resolute"), Kernel 7.0.0-38-generic, GNOME Wayland  
-**Orchestration:** OpenClaw 2026.10.8 (`google/gemini-2.5-flash`)  
-**Production Checkpoint:** `~/Maverick-DevOS`  
+**Project:** Maverick DevOS (Maven JARVIS)
+**Host Workstation:** ASUS ROG Strix G16 (AMD Ryzen 9 7845HX, 16 Cores / 32 Threads, 16 GB DDR5 RAM)
+**OS & Desktop:** Ubuntu Linux 26.04.1 LTS ("resolute"), Kernel 7.0.0-38-generic, GNOME Wayland
+**Orchestration:** OpenClaw 2026.10.8 (`google/gemini-2.5-flash`)
+**Production Checkpoint:** `~/Maverick-DevOS`
 
 ---
 
