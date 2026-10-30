@@ -16,6 +16,8 @@ from maverick.context.engine import ContextEngine
 from maverick.core.security import ConfirmationRequiredError
 from maverick.desktop.awareness import get_running_authorized_apps
 from maverick.desktop.launcher import launch_app
+from maverick.intelligence.memory import ContextMemory
+from maverick.intelligence.planner import TaskPlan, TaskPlanner, TaskStatus
 from maverick.media.spotify import SpotifyController
 from maverick.system.monitor import (
     get_battery_status,
@@ -158,6 +160,9 @@ class VoiceController:
         self._primary_cooldown_until: float = 0.0
         self._route_cooldowns: Dict[str, float] = {}
         self.last_turn_metrics: Dict[str, Any] = {}
+        self.memory = ContextMemory()
+        self.planner = TaskPlanner(memory=self.memory)
+        self.active_plan: Optional[TaskPlan] = None
 
     @staticmethod
     def _build_voice_system_prompt(user_prompt: str, default_max_tokens: int = 140) -> Tuple[str, int, str]:
@@ -722,6 +727,69 @@ class VoiceController:
         if intent == "interrupt":
             self.session.interrupt()
             return {"status": "success", "action": "interrupt", "response": ""}
+
+        # 1.1 Interactive Approval / Rejection Gates
+        if intent == "confirm":
+            if self.active_plan and self.active_plan.status == TaskStatus.AWAITING_APPROVAL:
+                step_id = self.active_plan.awaiting_step_id
+                res = self.planner.execute_plan(self.active_plan, approved_step_id=step_id)
+                if res.get("status") == "awaiting_approval":
+                    resp = f"Langkah disetujui. Langkah berikutnya '{res.get('description')}' memerlukan persetujuan. Katakan 'konfirmasi' untuk melanjutkan." if is_id else f"Step approved. Next step '{res.get('description')}' requires approval. Say 'confirm' to continue."
+                    return {"status": "confirmation_required", "action": "task_plan", "response": resp}
+                elif res.get("status") == "completed":
+                    resp = "Rencana tugas berhasil diselesaikan sepenuhnya." if is_id else "Task plan completed successfully."
+                    return {"status": "success", "action": "task_plan", "response": resp}
+                else:
+                    resp = "Rencana tugas dilanjutkan." if is_id else "Task plan resumed."
+                    return {"status": "success", "action": "task_plan", "response": resp}
+            resp = "Konfirmasi diterima, namun tidak ada tindakan yang sedang menunggu persetujuan." if is_id else "Confirmation received, but no action is currently awaiting approval."
+            return {"status": "info", "action": "confirm", "response": resp}
+
+        if intent == "reject":
+            if self.active_plan and self.active_plan.status == TaskStatus.AWAITING_APPROVAL:
+                self.active_plan.status = TaskStatus.FAILED
+                self.active_plan.awaiting_step_id = None
+                resp = "Rencana tugas dibatalkan." if is_id else "Task plan cancelled."
+                return {"status": "success", "action": "task_plan", "response": resp}
+            resp = "Tindakan dibatalkan." if is_id else "Action cancelled."
+            return {"status": "success", "action": "reject", "response": resp}
+
+        # 1.2 Autonomous Task Planning
+        if intent == "task_plan":
+            plan = self.planner.plan(cmd)
+            self.active_plan = plan
+            res = self.planner.execute_plan(plan)
+            if res.get("status") == "awaiting_approval":
+                resp = f"Rencana tugas disiapkan: {plan.goal}. Langkah '{res.get('description')}' memerlukan persetujuan Anda. Katakan 'konfirmasi' untuk menjalankan." if is_id else f"Task plan ready: {plan.goal}. Step '{res.get('description')}' requires your approval. Say 'confirm' to execute."
+                return {"status": "confirmation_required", "action": "task_plan", "response": resp, "plan_id": plan.plan_id}
+            elif res.get("status") == "completed":
+                resp = f"Rencana tugas '{plan.goal}' berhasil dijalankan." if is_id else f"Task plan '{plan.goal}' completed successfully."
+                return {"status": "success", "action": "task_plan", "response": resp}
+            else:
+                resp = f"Rencana tugas '{plan.goal}' telah dimulai." if is_id else f"Task plan '{plan.goal}' initiated."
+                return {"status": "success", "action": "task_plan", "response": resp}
+
+        # 1.3 Context Memory (Store / Recall)
+        if intent == "memory_store":
+            content = cmd
+            for prefix in ("ingat bahwa", "ingat ya", "ingat", "catat bahwa", "catat ya", "catat", "remember that", "remember to", "remember", "note that"):
+                if content.lower().startswith(prefix):
+                    content = content[len(prefix):].strip(":, ")
+                    break
+            if not content:
+                content = cmd
+            self.memory.store(content=content, category="user_preference")
+            resp = f"Sudah saya catat dalam memori: {content}." if is_id else f"I've saved that in memory: {content}."
+            return {"status": "success", "action": "memory_store", "response": resp}
+
+        if intent == "memory_recall":
+            mems = self.memory.search(query=cmd, limit=3)
+            if not mems:
+                resp = "Saya belum memiliki catatan memori terkait hal tersebut." if is_id else "I don't have any saved memories about that."
+            else:
+                summary = "; ".join([m.get("content", "") for m in mems[:2]])
+                resp = f"Berikut yang saya ingat: {summary}." if is_id else f"Here is what I remember: {summary}."
+            return {"status": "success", "action": "memory_recall", "response": resp}
 
         # 2. Spotify Volume Controls
         if intent == "spotify_volume":

@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from maverick.voice.audio import AudioCapture, calculate_rms
+from maverick.voice.clap import DualClapDetector
 from maverick.voice.config import VoiceConfig
 from maverick.voice.observability import voice_logger
 from maverick.voice.tts import TTSProvider, SpeechDispatcherTTS, create_tts_provider
@@ -39,6 +40,7 @@ class VoiceSession:
         audio_capture: Optional[AudioCapture] = None,
         wake_detector: Optional[WakeWordDetector] = None,
         tts: Optional[TTSProvider] = None,
+        clap_detector: Optional[DualClapDetector] = None,
     ):
         self.config = config or VoiceConfig()
         self.audio = audio_capture or AudioCapture(self.config)
@@ -51,12 +53,14 @@ class VoiceSession:
             else:
                 self.wake_detector = EnergySpectralWakeWordDetector(self.config)
         self.tts = tts or create_tts_provider(self.config)
+        self.clap_detector = clap_detector or DualClapDetector(self.config)
 
         self._state = VoiceState.IDLE
         self._muted = self.config.muted
         self._is_running = False
         self._state_callbacks: List[Callable[[VoiceState], None]] = []
         self._lock = threading.Lock()
+        self.last_trigger_source: str = "none"
 
         # Recorded utterance buffer
         self._audio_buffer: bytearray = bytearray()
@@ -107,9 +111,10 @@ class VoiceSession:
         time.sleep(0.05)
         self._transition_to(VoiceState.IDLE)
 
-    def trigger_wake_word(self) -> None:
-        """Programmatically trigger wake-word state (e.g. from UI keypress)."""
+    def trigger_wake_word(self, source: str = "ui") -> None:
+        """Programmatically trigger wake-word state (e.g. from UI keypress or clap)."""
         if self._state in (VoiceState.IDLE, VoiceState.ERROR):
+            self.last_trigger_source = source
             self._transition_to(VoiceState.WAKE_WORD_DETECTED)
             self._start_listening()
 
@@ -141,13 +146,17 @@ class VoiceSession:
         elif self._state == VoiceState.SPEAKING and not self.tts.is_speaking():
             self.rearm()
 
-        # 1. State: IDLE - Monitor for wake word
+        # 1. State: IDLE - Monitor for wake word or dual-clap pattern
         if self._state == VoiceState.IDLE:
             chunk = self.audio.read_chunk()
             if not chunk:
                 return None
 
-            if self.wake_detector.process_frame(chunk):
+            wake_triggered = bool(self.wake_detector.process_frame(chunk))
+            clap_triggered = bool(self.clap_detector.process_frame(chunk)) if getattr(self, "clap_detector", None) else False
+
+            if wake_triggered or clap_triggered:
+                self.last_trigger_source = "dual_clap" if clap_triggered else "wake_word"
                 self._transition_to(VoiceState.WAKE_WORD_DETECTED)
                 self._start_listening()
             return None
@@ -258,6 +267,8 @@ class VoiceSession:
             self.wake_detector.rearm()
         else:
             self.wake_detector.reset()
+        if hasattr(self, "clap_detector") and hasattr(self.clap_detector, "rearm"):
+            self.clap_detector.rearm()
         self._transition_to(VoiceState.IDLE)
 
     def reset(self) -> None:

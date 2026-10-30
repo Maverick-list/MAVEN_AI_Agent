@@ -1,0 +1,21 @@
+[Unit]
+Description=Maven JARVIS Control Center Dashboard Server
+Documentation=https://github.com/firza-ilmi/Maverick-DevOS
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/firza-ilmi/Maverick-DevOS
+ExecStart=/usr/bin/python3 -m maverick.dashboard.server --port 8765
+Restart=on-failure
+RestartSec=3
+Slice=session.slice
+OOMPolicy=continue
+Environment=PYTHONPATH=/home/firza-ilmi/Maverick-DevOS
+Environment=HOME=/home/firza-ilmi
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+

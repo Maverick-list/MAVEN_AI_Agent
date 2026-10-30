@@ -67,7 +67,11 @@ class VoiceDaemon:
     def _on_state_change(self, state: VoiceState) -> None:
         """Handle session state transitions."""
         if state == VoiceState.WAKE_WORD_DETECTED:
-            voice_logger.wake_acknowledgment("Yes, I'm listening.")
+            trigger_src = getattr(self.session, "last_trigger_source", "wake_word")
+            ack_msg = "Yes, I'm listening."
+            if trigger_src == "dual_clap":
+                ack_msg = "Yes, I'm here. What can I do for you?"
+            voice_logger.wake_acknowledgment(ack_msg)
 
     def stop(self, *args) -> None:
         """Signal daemon to gracefully shut down."""
@@ -104,6 +108,21 @@ class VoiceDaemon:
             threading.Thread(
                 target=self.controller.warm_gateway_session,
                 name="maven-openclaw-warmup",
+                daemon=True,
+            ).start()
+
+        # Execute once-per-boot greeting asynchronously once audio subsystems settle
+        if getattr(self.config, "boot_greeting_enabled", True):
+            from maverick.voice.greeting import BootGreetingManager
+            def _async_boot_greeting():
+                time.sleep(1.2)
+                try:
+                    BootGreetingManager(self.config).execute_boot_greeting(self.session)
+                except Exception as exc:
+                    voice_logger.exception("boot_greeting", exc)
+            threading.Thread(
+                target=_async_boot_greeting,
+                name="maven-boot-greeting",
                 daemon=True,
             ).start()
 

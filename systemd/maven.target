@@ -1,0 +1,9 @@
+[Unit]
+Description=Maven JARVIS Ambient Intelligence Suite
+Documentation=https://github.com/firza-ilmi/Maverick-DevOS
+Wants=openclaw-gateway.service maven-whisper.service maven-voice.service maven-dashboard.service
+After=openclaw-gateway.service maven-whisper.service
+
+[Install]
+WantedBy=default.target
+

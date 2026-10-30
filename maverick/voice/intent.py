@@ -143,6 +143,24 @@ class BilingualIntentClassifier:
         if clean in ("stop", "cancel", "be quiet", "silence", "berhenti", "diam", "batalkan", "cukup", "diam maven", "stop talking", "berhenti bicara"):
             return {"intent": "interrupt", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
 
+        # 2. Interactive Approval & Rejection Gates
+        if clean in ("confirm", "konfirmasi", "setuju", "approve", "lanjutkan", "yes", "ya", "lakukan", "ok konfirmasi", "oke konfirmasi"):
+            return {"intent": "confirm", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
+
+        if clean in ("reject", "tolak", "batalkan", "jangan", "cancel", "no", "tidak", "batalkan tugas"):
+            return {"intent": "reject", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
+
+        # 3. Autonomous Task Planner Intent
+        if any(p in clean for p in ("siapkan environment", "prepare development", "setup dev", "prepare dev", "siapkan dev", "setup environment")):
+            return {"intent": "task_plan", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
+
+        # 4. Context Memory (Store / Recall)
+        if clean.startswith(("ingat bahwa", "ingat ya", "catat bahwa", "catat ya", "remember that", "remember to", "remember")):
+            return {"intent": "memory_store", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
+
+        if any(p in clean for p in ("apa yang kamu ingat", "ingat apa", "apa saja yang kamu ingat", "what do you remember", "what do you know about", "recall memory", "recall")):
+            return {"intent": "memory_recall", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
+
         # 2. Spotify Volume Controls
         if re.search(r"\b(volume|suara|keras|pelan|louder|quieter)\b", clean):
             # Up

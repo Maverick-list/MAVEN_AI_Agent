@@ -1,0 +1,23 @@
+[Unit]
+Description=Maven JARVIS Ambient Voice & Intelligence Daemon
+Documentation=https://github.com/firza-ilmi/Maverick-DevOS
+After=pipewire.service wireplumber.service openclaw-gateway.service maven-whisper.service
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/firza-ilmi/Maverick-DevOS
+ExecStart=/usr/bin/python3 -m maverick.cli voice daemon
+Restart=on-failure
+RestartSec=3
+Slice=session.slice
+OOMPolicy=continue
+Environment=PYTHONPATH=/home/firza-ilmi/Maverick-DevOS
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=/home/firza-ilmi
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+

@@ -1,0 +1,18 @@
+[Unit]
+Description=Maven JARVIS Persistent Whisper STT Server
+Documentation=https://github.com/firza-ilmi/Maverick-DevOS
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/firza-ilmi/.local/share/maverick/whisper.cpp/build/bin/whisper-server --host 127.0.0.1 --port 18791 -m /home/firza-ilmi/.local/share/maverick/whisper.cpp/models/ggml-tiny.bin -t 8 -nt -sns
+Restart=always
+RestartSec=3
+Slice=session.slice
+OOMPolicy=continue
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+

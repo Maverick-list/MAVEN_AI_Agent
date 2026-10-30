@@ -222,6 +222,20 @@ class VoiceConfig:
     # Confirmation requirement for consequential actions
     enforce_confirmation: bool = True
 
+    # Dual-Clap Detection & Ambient Presence
+    enable_clap_detection: bool = True
+    clap_min_interval_sec: float = 0.18
+    clap_max_interval_sec: float = 0.75
+    clap_cooldown_sec: float = 2.0
+    clap_sensitivity: float = 0.65
+
+    # Boot Greeting & Quiet Hours
+    boot_greeting_enabled: bool = True
+    boot_greeting_lang: str = "auto"
+    quiet_hours_enabled: bool = True
+    quiet_hours_start: int = 22
+    quiet_hours_end: int = 7
+
     def __post_init__(self) -> None:
         """Apply persisted non-secret user tuning overrides if present."""
         saved = load_voice_settings()

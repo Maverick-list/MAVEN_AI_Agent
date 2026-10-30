@@ -574,6 +574,67 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_autostart(args: argparse.Namespace) -> int:
+    """Manage automatic boot startup via systemd user services."""
+    action = getattr(args, "autostart_action", "status")
+    units = ["maven.target", "openclaw-gateway.service", "maven-whisper.service", "maven-voice.service", "maven-dashboard.service"]
+
+    if action == "enable":
+        print("Enabling Maven JARVIS automatic boot startup via systemd...", end=" ", flush=True)
+        try:
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=5)
+            subprocess.run(["systemctl", "--user", "enable", "maven.target", "openclaw-gateway.service"], check=True, timeout=5)
+            print("\033[92m✔ Enabled\033[0m")
+            print("  Maven JARVIS will now automatically initialize on Ubuntu user login.")
+            return 0
+        except Exception as e:
+            print(f"\033[91m✖ Failed to enable: {e}\033[0m")
+            return 1
+
+    elif action == "disable":
+        print("Disabling Maven JARVIS automatic boot startup...", end=" ", flush=True)
+        try:
+            subprocess.run(["systemctl", "--user", "disable", "maven.target"], check=True, timeout=5)
+            print("\033[92m✔ Disabled\033[0m")
+            return 0
+        except Exception as e:
+            print(f"\033[91m✖ Failed to disable: {e}\033[0m")
+            return 1
+
+    else:
+        # Status
+        print("=" * 65)
+        print("  ⚡ MAVEN JARVIS — AUTOSTART CONFIGURATION")
+        print("=" * 65)
+        try:
+            res = subprocess.run(["systemctl", "--user", "is-enabled", "maven.target"], capture_output=True, text=True)
+            status_str = res.stdout.strip()
+            color = "\033[92m● ENABLED" if status_str == "enabled" else "\033[90m○ DISABLED"
+            print(f"  Systemd User Target:  {color}\033[0m ({status_str})")
+        except Exception as e:
+            print(f"  Systemd Status:       \033[91mError querying systemd: {e}\033[0m")
+        print("  Control Commands:")
+        print("    'maven autostart enable'   - Start Maven automatically on login")
+        print("    'maven autostart disable'  - Disable automatic startup")
+        print("=" * 65)
+        return 0
+
+
+def cmd_shortcut(args: argparse.Namespace) -> int:
+    """Manage native GNOME desktop hotkeys for Maven."""
+    from maverick.system.lifecycle import register_gnome_shortcut
+    action = getattr(args, "shortcut_action", "register") or "register"
+    if action == "register":
+        ok = register_gnome_shortcut()
+        if ok:
+            print("\033[92m✔ Registered GNOME shortcut: Super+M -> Maven Control Center (http://127.0.0.1:8765)\033[0m")
+            return 0
+        else:
+            print("\033[91m✖ Failed to register GNOME shortcut (gsettings unavailable or failed)\033[0m")
+            return 1
+    return 0
+
+
 def main() -> None:
     """Main launcher entry point."""
     parser = argparse.ArgumentParser(
@@ -614,6 +675,18 @@ def main() -> None:
     dash_p.add_argument("--open", action="store_true", help="Open Control Center in default browser")
     dash_p.add_argument("--stop", action="store_true", help="Stop background dashboard server")
 
+    # 8. autostart
+    auto_p = subparsers.add_parser("autostart", help="Configure automatic startup on system boot / user login")
+    auto_subs = auto_p.add_subparsers(dest="autostart_action", required=False)
+    auto_subs.add_parser("status", help="Check automatic startup status")
+    auto_subs.add_parser("enable", help="Enable automatic boot startup via systemd user services")
+    auto_subs.add_parser("disable", help="Disable automatic boot startup")
+
+    # 9. shortcut
+    sc_p = subparsers.add_parser("shortcut", help="Manage GNOME desktop keyboard shortcuts")
+    sc_subs = sc_p.add_subparsers(dest="shortcut_action", required=False)
+    sc_subs.add_parser("register", help="Register Super+M shortcut for Maven Control Center")
+
     args = parser.parse_args()
 
     if args.action == "start":
@@ -630,6 +703,10 @@ def main() -> None:
         sys.exit(cmd_profile(args))
     elif args.action == "dashboard":
         sys.exit(cmd_dashboard(args))
+    elif args.action == "autostart":
+        sys.exit(cmd_autostart(args))
+    elif args.action == "shortcut":
+        sys.exit(cmd_shortcut(args))
 
 
 if __name__ == "__main__":

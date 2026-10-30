@@ -43,6 +43,8 @@ from maverick.system.monitor import (
     get_network_status,
     get_os_session_info,
 )
+from maverick.intelligence.memory import ContextMemory
+from maverick.intelligence.planner import TaskPlan, TaskPlanner, TaskStatus
 from maverick.voice.audio import calculate_rms, list_audio_devices
 from maverick.voice.config import VoiceConfig, save_voice_settings
 from maverick.voice.controller import VoiceController
@@ -213,6 +215,10 @@ class TelemetryHub:
         self.controller = VoiceController(config=self.config, tts=self.tts)
         self.activity_logger = ActivityLogger()
         self.conversations = ConversationStore()
+        self.memory = ContextMemory()
+        self.planner = TaskPlanner(memory=self.memory)
+        self.active_plan: Optional[TaskPlan] = None
+        self._daemon_last_trigger: str = "wake_word"
 
         self._lock = threading.Lock()
         self._state_cond = threading.Condition()
@@ -566,6 +572,12 @@ class TelemetryHub:
                 "frames_processed": self._daemon_frames,
                 "last_wake_phrase": self._last_wake_phrase,
                 "last_wake_time": self._last_wake_ts,
+                "dual_wake": {
+                    "wake_word_enabled": True,
+                    "wake_words": list(self.config.wake_words),
+                    "clap_detection_enabled": getattr(self.config, "enable_clap_detection", True),
+                    "last_trigger_source": self._daemon_last_trigger,
+                },
             },
             "system": {
                 "os": self._cached_os_info,
@@ -613,6 +625,10 @@ class TelemetryHub:
                 "running_apps": self._cached_apps,
                 "recent_actions": recent_activities,
                 "recent_logs": list(self._recent_logs)[-25:],
+            },
+            "intelligence": {
+                "active_plan": self.active_plan.to_dict() if self.active_plan else None,
+                "recent_memories": self.memory.list_all(limit=6),
             },
             "conversations": self.conversations.list_recent(limit=30),
         }
@@ -958,6 +974,62 @@ class TelemetryHub:
             "tts": self.tts.get_status(),
         }
 
+    def submit_intelligence_plan(self, instruction: str) -> Dict[str, Any]:
+        plan = self.planner.plan(instruction)
+        self.active_plan = plan
+        exec_res = self.planner.execute_plan(plan)
+        self.notify_change()
+        return {
+            "status": "success",
+            "execution": exec_res,
+            "plan": plan.to_dict(),
+        }
+
+    def approve_intelligence_step(self, step_id: Optional[int] = None) -> Dict[str, Any]:
+        if not self.active_plan:
+            return {"status": "error", "message": "No active task plan to approve."}
+        target_step = step_id or self.active_plan.awaiting_step_id
+        if not target_step:
+            return {"status": "error", "message": "No step is currently awaiting approval."}
+        exec_res = self.planner.execute_plan(self.active_plan, approved_step_id=target_step)
+        self.notify_change()
+        return {
+            "status": "success",
+            "execution": exec_res,
+            "plan": self.active_plan.to_dict(),
+        }
+
+    def reject_intelligence_step(self, step_id: Optional[int] = None, reason: str = "Rejected by user") -> Dict[str, Any]:
+        if not self.active_plan:
+            return {"status": "error", "message": "No active task plan to reject."}
+        target_step = step_id or self.active_plan.awaiting_step_id
+        for s in self.active_plan.steps:
+            if s.step_id == target_step:
+                s.status = "failed"
+                s.result = {"status": "rejected", "message": reason}
+        self.active_plan.status = TaskStatus.FAILED
+        self.active_plan.awaiting_step_id = None
+        self.notify_change()
+        return {
+            "status": "success",
+            "plan": self.active_plan.to_dict(),
+        }
+
+    def store_memory(self, content: str, category: str = "general", tags: Optional[List[str]] = None) -> Dict[str, Any]:
+        mem = self.memory.store(content=content, category=category, tags=tags or [])
+        self.notify_change()
+        return {"status": "success", "memory": mem}
+
+    def delete_memory(self, memory_id: str) -> Dict[str, Any]:
+        ok = self.memory.delete(memory_id)
+        self.notify_change()
+        return {"status": "success" if ok else "not_found", "deleted": ok}
+
+    def set_voice_mute(self, muted: bool) -> Dict[str, Any]:
+        self.controller.session.set_muted(bool(muted))
+        self.notify_change()
+        return {"status": "success", "muted": bool(muted)}
+
 
 class ControlCenterRequestHandler(BaseHTTPRequestHandler):
     """HTTP + SSE request handler bound strictly to 127.0.0.1."""
@@ -1011,6 +1083,24 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
 
         if route == "/api/latency":
             self._send_json({"status": "success", "latency": get_latency_summary(limit=25)})
+            return
+
+        if route == "/api/intelligence/plan":
+            plan_dict = self.hub.active_plan.to_dict() if self.hub.active_plan else None
+            self._send_json({"status": "success", "plan": plan_dict})
+            return
+
+        if route == "/api/intelligence/memory":
+            qs = urllib.parse.parse_qs(parsed.query)
+            q = qs.get("q", [""])[0]
+            cat = qs.get("category", [None])[0]
+            limit = int(qs.get("limit", [10])[0])
+            mems = self.hub.memory.search(query=q, category=cat, limit=limit)
+            self._send_json({"status": "success", "memories": mems})
+            return
+
+        if route == "/api/intelligence/tools":
+            self._send_json({"status": "success", "tools": self.hub.planner.tools.list_tools()})
             return
 
         if route == "/api/voice/voices":
@@ -1090,6 +1180,64 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
                 speak_reply=bool(body.get("speak", True)),
                 browser_audio=bool(body.get("browser_audio", True)),
             )
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/plan":
+            instruction = str(body.get("instruction", "") or body.get("text", "")).strip()
+            if not instruction:
+                self._send_json({"status": "error", "message": "Instruction required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            res = self.hub.submit_intelligence_plan(instruction)
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/approve":
+            step_id = body.get("step_id")
+            if step_id is not None:
+                try:
+                    step_id = int(step_id)
+                except (ValueError, TypeError):
+                    step_id = None
+            res = self.hub.approve_intelligence_step(step_id=step_id)
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/reject":
+            step_id = body.get("step_id")
+            if step_id is not None:
+                try:
+                    step_id = int(step_id)
+                except (ValueError, TypeError):
+                    step_id = None
+            reason = str(body.get("reason", "Rejected by user"))
+            res = self.hub.reject_intelligence_step(step_id=step_id, reason=reason)
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/memory":
+            content = str(body.get("content", "")).strip()
+            if not content:
+                self._send_json({"status": "error", "message": "Content required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            cat = str(body.get("category", "general"))
+            tags = body.get("tags") if isinstance(body.get("tags"), list) else []
+            res = self.hub.store_memory(content=content, category=cat, tags=tags)
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/memory/delete":
+            mem_id = str(body.get("id", "")).strip()
+            if not mem_id:
+                self._send_json({"status": "error", "message": "Memory id required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            res = self.hub.delete_memory(mem_id)
+            self._send_json(res)
+            return
+
+        if route == "/api/voice/mute":
+            muted = bool(body.get("muted", False))
+            res = self.hub.set_voice_mute(muted)
             self._send_json(res)
             return
 

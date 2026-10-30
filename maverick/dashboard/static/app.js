@@ -363,6 +363,12 @@
     // 8. Center Dock — Per-Stage Voice Pipeline Latency Telemetry
     renderLatencyTelemetry(snap.latency || {});
 
+    // 9. Dual Wake Status & Emergency Mute
+    renderDualWake(snap);
+
+    // 10. Autonomous Task Planning & Intelligence HUD
+    renderTaskPlan(snap.intelligence?.active_plan);
+
     // Update live logs drawer if open
     const logsModal = document.getElementById("logs-modal");
     if (!logsModal.hidden) {
@@ -845,6 +851,226 @@
   });
   document.getElementById("btn-close-logs").addEventListener("click", () => {
     logsModal.hidden = true;
+  });
+
+  // --- Dual Wake & Emergency Mute Handlers ---
+  function renderDualWake(snap) {
+    const dw = snap?.dual_wake || {};
+    const pillWake = document.getElementById("pill-wake-word");
+    const pillClap = document.getElementById("pill-dual-clap");
+    const btnMute = document.getElementById("btn-emergency-mute");
+    const isMuted = Boolean(snap?.session?.muted);
+
+    if (pillWake) {
+      const ok = Boolean(dw.wake_word_armed);
+      pillWake.textContent = ok ? "WAKE: ARMED" : "WAKE: OFF";
+      pillWake.className = `mini-pill ${ok ? "ok" : "warn"}`;
+    }
+
+    if (pillClap) {
+      const ok = Boolean(dw.clap_detection_enabled);
+      pillClap.textContent = ok ? "CLAP: ARMED" : "CLAP: OFF";
+      pillClap.className = `mini-pill ${ok ? "ok" : "warn"}`;
+    }
+
+    if (btnMute) {
+      btnMute.textContent = isMuted ? "MIC: MUTED" : "MIC: ACTIVE";
+      btnMute.className = `mini-pill mute-toggle ${isMuted ? "muted" : "ok"}`;
+    }
+  }
+
+  document.getElementById("btn-emergency-mute")?.addEventListener("click", async () => {
+    const currentMuted = Boolean(state.lastSnapshot?.session?.muted);
+    const newMuted = !currentMuted;
+    try {
+      await apiPost("/api/voice/mute", { muted: newMuted });
+      showToast(newMuted ? "Hardware audio/microphone MUTED" : "Audio/microphone UNMUTED");
+    } catch (err) {
+      showToast(`Mute toggle failed: ${err.message}`);
+    }
+  });
+
+  // --- Autonomous Task Planner UI ---
+  function renderTaskPlan(plan) {
+    const goalLine = document.getElementById("plan-goal-line");
+    const statusBadge = document.getElementById("plan-status-badge");
+    const stream = document.getElementById("plan-steps-stream");
+    if (!goalLine || !statusBadge || !stream) return;
+
+    if (!plan || !plan.steps || plan.steps.length === 0) {
+      goalLine.textContent = "NO ACTIVE TASK PLAN";
+      statusBadge.textContent = "IDLE";
+      statusBadge.className = "mini-badge";
+      stream.innerHTML = '<div class="plan-empty">No task plan in progress. Say "siapkan dev environment" or ask Maven to plan a task.</div>';
+      return;
+    }
+
+    goalLine.textContent = plan.goal || "ACTIVE TASK PLAN";
+    const st = plan.status || "pending";
+    statusBadge.textContent = st.replace(/_/g, " ").toUpperCase();
+    statusBadge.className = `mini-badge ${st === "completed" ? "ok" : st === "awaiting_approval" ? "warn" : ""}`;
+
+    stream.innerHTML = "";
+    for (const step of plan.steps) {
+      const item = document.createElement("div");
+      item.className = `plan-step-item ${step.status}`;
+
+      const head = document.createElement("div");
+      head.className = "step-header";
+
+      const title = document.createElement("span");
+      title.className = "step-desc";
+      title.textContent = `${step.step_id}. ${step.description}`;
+
+      const pill = document.createElement("span");
+      pill.className = `step-pill ${step.status}`;
+      pill.textContent = step.status.replace(/_/g, " ");
+
+      head.appendChild(title);
+      head.appendChild(pill);
+      item.appendChild(head);
+
+      if (step.status === "awaiting_approval") {
+        const actions = document.createElement("div");
+        actions.className = "step-actions";
+
+        const btnApprove = document.createElement("button");
+        btnApprove.type = "button";
+        btnApprove.className = "btn-step-action btn-step-approve";
+        btnApprove.textContent = "✔ APPROVE & RUN";
+        btnApprove.addEventListener("click", async () => {
+          btnApprove.disabled = true;
+          showToast(`Approving step ${step.step_id}: ${step.description}...`);
+          try {
+            await apiPost("/api/intelligence/approve", { step_id: step.step_id });
+          } catch (err) {
+            showToast(`Approval error: ${err.message}`);
+          }
+        });
+
+        const btnReject = document.createElement("button");
+        btnReject.type = "button";
+        btnReject.className = "btn-step-action btn-step-reject";
+        btnReject.textContent = "✕ REJECT";
+        btnReject.addEventListener("click", async () => {
+          btnReject.disabled = true;
+          showToast(`Rejecting step ${step.step_id}...`);
+          try {
+            await apiPost("/api/intelligence/reject", { step_id: step.step_id });
+          } catch (err) {
+            showToast(`Rejection error: ${err.message}`);
+          }
+        });
+
+        actions.appendChild(btnApprove);
+        actions.appendChild(btnReject);
+        item.appendChild(actions);
+      }
+
+      stream.appendChild(item);
+    }
+  }
+
+  // --- Context Memory Drawer Handlers ---
+  const memoryModal = document.getElementById("memory-modal");
+  const memoryGrid = document.getElementById("memory-grid");
+  const memorySearchInput = document.getElementById("memory-search-input");
+  const memoryAddForm = document.getElementById("memory-add-form");
+
+  async function loadMemories(query = "") {
+    if (!memoryGrid) return;
+    try {
+      const url = query ? `/api/intelligence/memory?q=${encodeURIComponent(query)}` : "/api/intelligence/memory";
+      const resp = await fetch(url);
+      const data = await resp.json();
+      renderMemories(data.memories || []);
+    } catch (_) {
+      memoryGrid.innerHTML = '<div class="plan-empty">Error fetching memories.</div>';
+    }
+  }
+
+  function renderMemories(memories) {
+    if (!memoryGrid) return;
+    memoryGrid.innerHTML = "";
+    if (!memories.length) {
+      memoryGrid.innerHTML = '<div class="plan-empty">No memories found in persistent store.</div>';
+      return;
+    }
+    for (const mem of memories) {
+      const card = document.createElement("div");
+      card.className = "memory-card";
+
+      const top = document.createElement("div");
+      top.className = "memory-card-top";
+
+      const cat = document.createElement("span");
+      cat.className = "memory-card-cat";
+      cat.textContent = mem.category || "GENERAL";
+
+      const btnDel = document.createElement("button");
+      btnDel.type = "button";
+      btnDel.className = "memory-card-delete";
+      btnDel.title = "Delete memory";
+      btnDel.textContent = "✕";
+      btnDel.addEventListener("click", async () => {
+        if (!confirm("Delete this memory record?")) return;
+        await apiPost("/api/intelligence/memory/delete", { id: mem.id });
+        showToast("Memory deleted.");
+        loadMemories(memorySearchInput?.value.trim() || "");
+      });
+
+      top.appendChild(cat);
+      top.appendChild(btnDel);
+      card.appendChild(top);
+
+      const content = document.createElement("div");
+      content.className = "memory-card-content";
+      content.textContent = mem.content;
+      card.appendChild(content);
+
+      if (mem.tags && mem.tags.length > 0) {
+        const tagsWrap = document.createElement("div");
+        tagsWrap.className = "memory-card-tags";
+        for (const t of mem.tags) {
+          const tag = document.createElement("span");
+          tag.className = "memory-tag";
+          tag.textContent = `#${t}`;
+          tagsWrap.appendChild(tag);
+        }
+        card.appendChild(tagsWrap);
+      }
+
+      memoryGrid.appendChild(card);
+    }
+  }
+
+  document.getElementById("btn-open-memory")?.addEventListener("click", () => {
+    memoryModal.hidden = false;
+    loadMemories();
+  });
+
+  document.getElementById("btn-close-memory")?.addEventListener("click", () => {
+    memoryModal.hidden = true;
+  });
+
+  memorySearchInput?.addEventListener("input", (e) => {
+    const q = e.target.value.trim();
+    loadMemories(q);
+  });
+
+  memoryAddForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = document.getElementById("memory-new-content");
+    const val = input.value.trim();
+    if (!val) return;
+    try {
+      await apiPost("/api/intelligence/memory", { content: val, category: "user_preference" });
+      input.value = "";
+      showToast("Memory saved successfully.");
+      loadMemories();
+    } catch (err) {
+      showToast(`Failed to store memory: ${err.message}`);
+    }
   });
 
   // =========================================================================

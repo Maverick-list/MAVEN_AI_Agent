@@ -38,6 +38,12 @@
       <span id="connection-label">127.0.0.1 LOCAL LINK · CONNECTING</span>
     </div>
 
+    <div class="dual-wake-cluster">
+      <span class="mini-pill ok" id="pill-wake-word">WAKE: ARMED</span>
+      <span class="mini-pill ok" id="pill-dual-clap">CLAP: ARMED</span>
+      <button type="button" class="mini-pill mute-toggle" id="btn-emergency-mute" title="Instant Privacy / Hardware Audio Mute">MIC: ACTIVE</button>
+    </div>
+
     <div class="top-meta">
       <div class="clock-readout">
         <span id="clock-time">--:--:--</span>
@@ -201,6 +207,20 @@
         </div>
       </section>
 
+      <!-- Autonomous Task Planning HUD -->
+      <section class="glass-card plan-card" id="card-intelligence">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">AUTONOMOUS TASK PLAN:</h2>
+            <p class="card-status-line" id="plan-goal-line">NO ACTIVE TASK PLAN</p>
+          </div>
+          <span class="mini-badge" id="plan-status-badge">IDLE</span>
+        </div>
+        <div class="plan-steps-stream" id="plan-steps-stream">
+          <div class="plan-empty">No task plan in progress. Say "siapkan dev environment" or type below.</div>
+        </div>
+      </section>
+
       <!-- 2. Current Activity & Security Gates -->
       <section class="glass-card" id="card-activity">
         <div class="card-header">
@@ -244,6 +264,7 @@
         </select>
       </div>
       <button type="button" class="hud-btn" id="btn-open-settings">[ VOICE SETTINGS ]</button>
+      <button type="button" class="hud-btn" id="btn-open-memory">[ CONTEXT MEMORY ]</button>
     </div>
 
     <form class="command-form" id="command-form" autocomplete="off">
@@ -384,6 +405,28 @@
       </div>
       <div class="modal-body">
         <div class="log-terminal" id="live-log-terminal"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SLIDE-OVER DRAWER: CONTEXT MEMORY -->
+  <div class="modal-backdrop" id="memory-modal" hidden>
+    <div class="modal-panel modal-panel-wide" role="dialog" aria-modal="true" aria-labelledby="memory-title">
+      <div class="modal-header">
+        <h2 id="memory-title">CONTEXT MEMORY // PERSISTENT COGNITIVE STORE</h2>
+        <button type="button" class="ghost-chip" id="btn-close-memory">CLOSE ✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="memory-search-bar">
+          <input type="text" id="memory-search-input" class="memory-add-input" placeholder="Search persistent memories (e.g. 'CampusLink', 'theme', 'python')..." />
+        </div>
+        <form class="memory-add-form" id="memory-add-form" style="margin-top: 10px;">
+          <input type="text" id="memory-new-content" class="memory-add-input" placeholder="Store new memory (e.g. 'Project CampusLink frontend is React and backend is FastAPI')..." required />
+          <button type="submit" class="hud-btn hud-btn-primary">[ STORE MEMORY ]</button>
+        </form>
+        <div class="memory-grid" id="memory-grid" style="margin-top: 14px;">
+          <div class="plan-empty">No memories loaded.</div>
+        </div>
       </div>
     </div>
   </div>
