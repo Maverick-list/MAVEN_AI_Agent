@@ -1034,18 +1034,43 @@ class TelemetryHub:
         return {"status": "success", "muted": bool(muted)}
 
     def set_vision_mode(self, mode_str: str) -> Dict[str, Any]:
+        if mode_str in ("normal", "mode_a"):
+            res = self.vision_controller.mode_manager.deactivate_vision()
+            self.notify_change()
+            return res
+        elif mode_str in ("vision_active", "vision_control", "mode_b"):
+            res = self.vision_controller.mode_manager.activate_vision()
+            self.notify_change()
+            return res
+
         try:
             mode = VisionMode(mode_str)
+            res = self.vision_controller.set_mode(mode)
         except ValueError:
             return {"status": "error", "message": f"Invalid mode: {mode_str}"}
-        res = self.vision_controller.set_mode(mode)
+
+        self.notify_change()
+        return res
+
+    def toggle_vision_mode(self) -> Dict[str, Any]:
+        res = self.vision_controller.mode_manager.toggle_mode()
+        self.notify_change()
+        return res
+
+    def activate_vision_mode(self) -> Dict[str, Any]:
+        res = self.vision_controller.mode_manager.activate_vision()
+        self.notify_change()
+        return res
+
+    def deactivate_vision_mode(self) -> Dict[str, Any]:
+        res = self.vision_controller.mode_manager.deactivate_vision()
         self.notify_change()
         return res
 
     def vision_emergency_stop(self) -> Dict[str, Any]:
-        self.vision_controller.engine.mouse.emergency_stop()
+        res = self.vision_controller.mode_manager.emergency_stop()
         self.notify_change()
-        return {"status": "success", "action": "emergency_stop", "message": "Vision and virtual mouse halted."}
+        return res
 
     def calibrate_vision(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         cal = self.vision_controller.engine.calibrator.config
@@ -1272,6 +1297,21 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/vision/mode":
             mode_str = str(body.get("mode", "privacy_mode"))
             res = self.hub.set_vision_mode(mode_str)
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/mode/toggle":
+            res = self.hub.toggle_vision_mode()
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/mode/activate":
+            res = self.hub.activate_vision_mode()
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/mode/deactivate":
+            res = self.hub.deactivate_vision_mode()
             self._send_json(res)
             return
 

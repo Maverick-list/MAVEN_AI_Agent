@@ -50,6 +50,7 @@ class GestureEngine:
         self._fps_counter = 0
         self._last_fps_calc = time.time()
         self._emergency_stop_triggered = False
+        self._pinch_hold_count = 0
 
     def start(self) -> bool:
         """Start vision processing pipeline."""
@@ -132,12 +133,14 @@ class GestureEngine:
         if gesture == GestureType.CLOSED_FIST:
             self.mouse.emergency_stop()
             self._emergency_stop_triggered = True
+            self._pinch_hold_count = 0
             return
 
-        # 2. Open palm: release click-and-hold
+        # 2. Open palm: release click-and-hold (drop)
         if gesture == GestureType.OPEN_PALM:
             self.mouse.release_hold(MouseButton.LEFT)
             self.mouse.release_hold(MouseButton.RIGHT)
+            self._pinch_hold_count = 0
             return
 
         # 3. Cursor movement (Index finger pointing or pinching while moving)
@@ -147,28 +150,42 @@ class GestureEngine:
             self._cursor_pos = (sx, sy)
             self.mouse.move_to(sx, sy)
 
-        # 4. Discrete clicks
+        # 4. Discrete clicks & controlled Drag-and-Drop hold
         if gesture == GestureType.INDEX_PINCH:
-            self.mouse.click(MouseButton.LEFT)
+            if self._pinch_hold_count == 0:
+                self.mouse.click(MouseButton.LEFT)
+            self._pinch_hold_count += 1
+            if self._pinch_hold_count >= 4:
+                # Sustained pinch: engage drag-and-drop hold
+                self.mouse.press_and_hold(MouseButton.LEFT)
 
         elif gesture == GestureType.DOUBLE_PINCH:
+            self._pinch_hold_count = 0
             self.mouse.double_click()
 
         elif gesture == GestureType.MIDDLE_PINCH:
+            self._pinch_hold_count = 0
             self.mouse.click(MouseButton.RIGHT)
 
         # 5. Scroll mode (Two fingers pointing)
         elif gesture == GestureType.TWO_FINGERS_POINTING:
+            self._pinch_hold_count = 0
             vy = velocity[1]
             if abs(vy) > 0.08:
                 delta = int(round(-vy * 12))
                 self.mouse.scroll(delta)
 
         elif gesture == GestureType.SWIPE_UP:
+            self._pinch_hold_count = 0
             self.mouse.scroll(4)
 
         elif gesture == GestureType.SWIPE_DOWN:
+            self._pinch_hold_count = 0
             self.mouse.scroll(-4)
+
+        else:
+            if gesture != GestureType.INDEX_POINTING:
+                self._pinch_hold_count = 0
 
     def get_telemetry(self) -> Dict[str, Any]:
         """Telemetry snapshot for Control Center HUD."""
@@ -183,6 +200,7 @@ class GestureEngine:
                 "hand_count": len(self._last_hands),
                 "hands": hands_meta,
                 "emergency_stop": self._emergency_stop_triggered,
+                "tracking_provider": self.tracker.get_provider_name(),
                 "camera": self.camera.get_status(),
                 "mouse": self.mouse.get_state(),
             }

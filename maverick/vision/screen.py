@@ -126,3 +126,56 @@ class ScreenIntelligence:
             "active_applications": apps,
             "element_count": len(apps),
         }
+
+    def explain_screen(self) -> Dict[str, Any]:
+        """
+        Synthesize a natural language explanation of visible windows and interactive targets
+        grounded in the native GNOME accessibility tree.
+        """
+        if not self._atspi:
+            return {
+                "status": "unavailable",
+                "explanation": "Accessibility inspection is not available in headless mode.",
+            }
+
+        desktop = self._atspi.get_desktop(0)
+        if not desktop:
+            return {"status": "unavailable", "explanation": "No accessible desktop session detected."}
+
+        active_windows = []
+        interactive_targets = []
+
+        try:
+            for i in range(desktop.get_child_count()):
+                app = desktop.get_child_at_index(i)
+                if not app:
+                    continue
+                app_name = (app.get_name() or "").strip()
+                if not app_name or app_name in ("gnome-shell", "mutter-x11-frames", "gjs"):
+                    continue
+                active_windows.append(app_name)
+
+                # Inspect top-level interactive targets
+                for j in range(min(8, app.get_child_count())):
+                    child = app.get_child_at_index(j)
+                    if child:
+                        c_name = (child.get_name() or "").strip()
+                        c_role = child.get_role_name() or ""
+                        if c_name and c_role in ("push button", "text", "entry", "menu bar", "page tab"):
+                            interactive_targets.append(f"{c_role} '{c_name}' in {app_name}")
+        except Exception:
+            pass
+
+        if not active_windows:
+            explanation = "Your desktop is currently displaying the GNOME desktop background with no active foreground application windows."
+        else:
+            win_str = ", ".join(active_windows[:4])
+            t_str = f" Visible interactive elements include {', '.join(interactive_targets[:3])}." if interactive_targets else ""
+            explanation = f"Currently visible applications on your screen include {win_str}.{t_str}"
+
+        return {
+            "status": "success",
+            "explanation": explanation,
+            "active_windows": active_windows,
+            "targets": interactive_targets[:6],
+        }

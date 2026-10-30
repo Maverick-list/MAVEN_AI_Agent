@@ -129,7 +129,84 @@ class TaskPlanner:
                 requires_approval=True,
             ))
 
-        # 2. Diagnostics & System Telemetry pattern
+        # 2. Autonomous Project & Application Creation pattern
+        # e.g. "Maven, create a Python calculator application" or "create a Python project named SmartCalculator"
+        elif any(k in lower_goal for k in ("create a python", "create python project", "buat aplikasi", "create project", "build a python", "buat proyek")):
+            proj_name = "SmartCalculator"
+            if "named" in lower_goal:
+                proj_name = clean_goal.split("named")[-1].strip().split()[0].strip(".,;:?!")
+            elif "bernama" in lower_goal:
+                proj_name = clean_goal.split("bernama")[-1].strip().split()[0].strip(".,;:?!")
+            elif "calculator" in lower_goal or "kalkulator" in lower_goal:
+                proj_name = "SmartCalculator"
+
+            proj_dir = f"~/projects/{proj_name}"
+
+            # Step 1: Inspect development environment
+            steps.append(TaskStep(
+                step_id=1,
+                description="Inspect Python runtime environment",
+                tool_name="system_safe_command",
+                parameters={"command": "python3 --version"},
+                dependencies=[],
+            ))
+
+            # Step 2: Create project directory
+            steps.append(TaskStep(
+                step_id=2,
+                description=f"Create project directory '{proj_dir}'",
+                tool_name="filesystem_create_dir",
+                parameters={"path": proj_dir},
+                dependencies=[1],
+            ))
+
+            # Step 3: Write application source code
+            calc_code = (
+                "\"\"\"SmartCalculator Application generated autonomously by Maven JARVIS.\"\"\"\n\n"
+                "class Calculator:\n"
+                "    def add(self, a, b): return a + b\n"
+                "    def subtract(self, a, b): return a - b\n"
+                "    def multiply(self, a, b): return a * b\n"
+                "    def divide(self, a, b):\n"
+                "        if b == 0: raise ValueError('Cannot divide by zero')\n"
+                "        return a / b\n\n"
+                "if __name__ == '__main__':\n"
+                "    calc = Calculator()\n"
+                "    print('SmartCalculator Online. 10 + 5 =', calc.add(10, 5))\n"
+                "    print('10 * 5 =', calc.multiply(10, 5))\n"
+            )
+            steps.append(TaskStep(
+                step_id=3,
+                description=f"Generate and write source code 'calculator.py' in '{proj_dir}'",
+                tool_name="filesystem_write_file",
+                parameters={"path": f"{proj_dir}/calculator.py", "content": calc_code},
+                dependencies=[2],
+            ))
+
+            # Step 4: Execute and verify program
+            expanded_proj = os.path.expanduser(proj_dir)
+            steps.append(TaskStep(
+                step_id=4,
+                description=f"Execute program 'calculator.py' to verify runtime correctness",
+                tool_name="system_safe_command",
+                parameters={"command": f"python3 {expanded_proj}/calculator.py"},
+                dependencies=[3],
+            ))
+
+            # Step 5: Save project record in persistent memory
+            steps.append(TaskStep(
+                step_id=5,
+                description=f"Save project creation record in Context Memory",
+                tool_name="memory_store",
+                parameters={
+                    "content": f"Created Python project '{proj_name}' at '{proj_dir}' with verified arithmetic execution.",
+                    "category": "projects",
+                    "tags": ["python", proj_name.lower(), "code"],
+                },
+                dependencies=[4],
+            ))
+
+        # 3. Diagnostics & System Telemetry pattern
         # e.g. "periksa kondisi laptop dan simpan ringkasan" or "check laptop status and save to memory"
         elif any(k in lower_goal for k in ("periksa kondisi", "check laptop status", "diagnostik laptop", "laptop health")):
             steps.append(TaskStep(
@@ -304,3 +381,8 @@ class TaskPlanner:
     def get_plan(self, plan_id: str) -> Optional[TaskPlan]:
         """Look up plan by ID."""
         return self._active_plans.get(plan_id)
+
+
+# Backward compatibility aliases
+Planner = TaskPlanner
+StepStatus = TaskStatus

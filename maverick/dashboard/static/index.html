@@ -41,7 +41,9 @@
     <div class="dual-wake-cluster">
       <span class="mini-pill ok" id="pill-wake-word">WAKE: ARMED</span>
       <span class="mini-pill ok" id="pill-dual-clap">CLAP: ARMED</span>
-      <span class="mini-pill warn" id="pill-vision-mode">VISION: PRIVACY</span>
+      <span class="mini-pill ok" id="pill-interaction-mode">MODE: NORMAL</span>
+      <span class="mini-pill ok" id="pill-physical-status" title="Physical mouse and keyboard unrestricted">PHYSICAL: ACTIVE</span>
+      <button type="button" class="mini-pill mute-toggle" id="btn-top-toggle-mode" style="cursor: pointer;" title="Toggle Vision Control Mode (Super+Shift+V)">⇄ MODE</button>
       <button type="button" class="mini-pill mute-toggle" id="btn-emergency-mute" title="Instant Privacy / Hardware Audio Mute">MIC: ACTIVE</button>
       <button type="button" class="mini-pill muted" id="btn-gesture-estop" style="cursor: pointer;" title="Instant Gesture & Mouse Emergency Stop">🛑 E-STOP</button>
     </div>
@@ -128,12 +130,20 @@
       <section class="glass-card" id="card-vision-hud">
         <div class="card-header">
           <div>
-            <h2 class="card-label">VISION & GESTURES:</h2>
-            <p class="card-primary-value" id="vision-mode-title">PRIVACY MODE</p>
-            <p class="card-subline" id="vision-fps-line">CAMERA OFF · 0 FPS</p>
+            <h2 class="card-label">INTERACTION MODE & VISION:</h2>
+            <p class="card-primary-value" id="vision-mode-title">NORMAL MODE</p>
+            <p class="card-subline" id="vision-fps-line">PHYSICAL MOUSE & KEYBOARD PRIMARY · CAMERA OFF</p>
           </div>
-          <span class="mini-badge" id="vision-status-badge">STANDBY</span>
+          <span class="mini-badge" id="vision-status-badge">NORMAL</span>
         </div>
+
+        <div class="vision-mode-toggle-box">
+          <button type="button" class="mode-switch-btn" id="btn-toggle-vision-mode" title="Toggle between Normal Mode and Vision Control Mode (Shortcut: Super+Shift+V)">
+            <span class="mode-switch-icon">⇄</span>
+            <span id="btn-toggle-vision-text">SWITCH TO VISION CONTROL MODE</span>
+          </button>
+        </div>
+
         <div class="vision-telemetry-row">
           <div class="gesture-display">
             <span class="gesture-label">GESTURE:</span>
@@ -146,15 +156,20 @@
             <span class="gesture-conf-val" id="vision-conf-val">0%</span>
           </div>
         </div>
+
         <div class="vision-coords-row">
           <span class="vision-coords-label">POINTER:</span>
           <span class="vision-coords-val" id="vision-coords-val">X: -- | Y: --</span>
           <span class="vision-hand-label" id="vision-hand-label">HAND: NONE</span>
         </div>
+
+        <div class="card-foot-note" id="vision-physical-note">
+          Physical mouse & keyboard remain 100% functional with instant priority override.
+        </div>
+
         <div class="vision-actions-bar">
-          <button type="button" class="ghost-chip" id="btn-toggle-vision" title="Cycle Vision Modes">TOGGLE MODE</button>
           <button type="button" class="ghost-chip chip-warn" id="btn-calibrate-vision" title="Calibrate Neutral Hand Box">CALIBRATE</button>
-          <button type="button" class="ghost-chip chip-danger" id="btn-vision-estop" title="Emergency Stop Gestures">E-STOP</button>
+          <button type="button" class="ghost-chip chip-danger" id="btn-vision-estop" title="Emergency Stop Gestures">🛑 E-STOP</button>
         </div>
       </section>
     </aside>

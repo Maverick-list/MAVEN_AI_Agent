@@ -691,20 +691,24 @@ class VoiceController:
         target = parsed.get("target")
         is_id = parsed.get("is_id", False)
 
-        if not intent or intent in ("empty", "unhandled"):
-            # Check vision / pointer multimodal directive
-            if self.vision:
-                vis_res = self.vision.handle_multimodal_command(cmd)
-                if vis_res:
-                    voice_logger.intent_classified(
-                        intent=vis_res.get("action", "vision_action"),
-                        target=None,
-                        lang="id" if is_id else "en",
-                        confidence=0.95,
-                        clean_text=cmd,
-                    )
-                    return vis_res
+        # 1. Fast-path check for vision, pointer, typing, or interaction mode directives.
+        # Generic "stop"/"berhenti" is handled by speech/media interrupt unless vision is active or explicit vision directive.
+        is_explicit_vis = any(w in cmd.lower() for w in ("visi", "gestur", "pointer", "klik", "gulir", "ketik", "layar", "emergency stop", "kursor", "hand"))
+        is_vision_active = bool(self.vision and hasattr(self.vision, "mode_manager") and self.vision.mode_manager.is_vision_active())
 
+        if self.vision and (intent != "interrupt" or is_explicit_vis or is_vision_active):
+            vis_res = self.vision.handle_multimodal_command(cmd)
+            if vis_res:
+                voice_logger.intent_classified(
+                    intent=vis_res.get("action", "vision_action"),
+                    target=None,
+                    lang="id" if is_id else "en",
+                    confidence=0.95,
+                    clean_text=cmd,
+                )
+                return vis_res
+
+        if not intent or intent in ("empty", "unhandled"):
             voice_logger.intent_classified(
                 intent="unhandled",
                 target=None,

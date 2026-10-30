@@ -896,9 +896,14 @@
   // --- Multimodal Vision & Gesture Telemetry & Control ---
   function renderVisionHud(snap) {
     const vision = snap?.vision || {};
-    const mode = vision.mode || "privacy_mode";
+    const imode = (vision.interaction_mode || vision.mode || "normal").toLowerCase();
+    const mode = vision.mode || "normal";
     const engine = vision.engine || {};
     const pillMode = document.getElementById("pill-vision-mode");
+    const pillInteractionMode = document.getElementById("pill-interaction-mode");
+    const pillPhysicalStatus = document.getElementById("pill-physical-status");
+    const btnToggleVisionMode = document.getElementById("btn-toggle-vision-mode");
+    const btnToggleVisionText = document.getElementById("btn-toggle-vision-text");
     const modeTitle = document.getElementById("vision-mode-title");
     const fpsLine = document.getElementById("vision-fps-line");
     const statusBadge = document.getElementById("vision-status-badge");
@@ -908,12 +913,57 @@
     const coordsVal = document.getElementById("vision-coords-val");
     const handLabel = document.getElementById("vision-hand-label");
 
+    // Top Navigation Interaction Mode Pill
+    if (pillInteractionMode) {
+      if (imode === "vision_active") {
+        pillInteractionMode.textContent = "MODE: VISION CONTROL";
+        pillInteractionMode.className = "mini-pill ok";
+      } else if (imode === "vision_starting") {
+        pillInteractionMode.textContent = "MODE: STARTING...";
+        pillInteractionMode.className = "mini-pill warn";
+      } else if (imode === "vision_paused") {
+        pillInteractionMode.textContent = "MODE: PAUSED (PHYSICAL IN USE)";
+        pillInteractionMode.className = "mini-pill warn";
+      } else if (imode === "emergency_stopped") {
+        pillInteractionMode.textContent = "MODE: E-STOPPED";
+        pillInteractionMode.className = "mini-pill warn";
+      } else {
+        pillInteractionMode.textContent = "MODE: NORMAL";
+        pillInteractionMode.className = "mini-pill muted";
+      }
+    }
+
+    // Top Navigation Physical Input Status Pill
+    if (pillPhysicalStatus) {
+      if (imode === "vision_paused" || vision.physical_input_active) {
+        pillPhysicalStatus.textContent = "PHYSICAL: ACTIVE (PRIORITY)";
+        pillPhysicalStatus.className = "mini-pill ok";
+      } else {
+        pillPhysicalStatus.textContent = "PHYSICAL: UNRESTRICTED";
+        pillPhysicalStatus.className = "mini-pill muted";
+      }
+    }
+
+    // Vision Card Big Mode Toggle Button
+    if (btnToggleVisionMode && btnToggleVisionText) {
+      if (imode === "vision_active" || imode === "vision_starting") {
+        btnToggleVisionMode.classList.add("active-vision");
+        btnToggleVisionText.textContent = "RETURN TO NORMAL MODE";
+      } else if (imode === "vision_paused") {
+        btnToggleVisionMode.classList.add("active-vision");
+        btnToggleVisionText.textContent = "RETURN TO NORMAL MODE (PAUSED)";
+      } else {
+        btnToggleVisionMode.classList.remove("active-vision");
+        btnToggleVisionText.textContent = "SWITCH TO VISION CONTROL MODE";
+      }
+    }
+
     if (pillMode) {
-      const modeLabel = mode.replace("_", " ").toUpperCase();
+      const modeLabel = imode.replace("_", " ").toUpperCase();
       pillMode.textContent = `VISION: ${modeLabel.split(" ")[0]}`;
-      if (mode === "full_assistant" || mode === "gesture_control") {
+      if (imode === "vision_active" || imode === "full_assistant" || imode === "gesture_control") {
         pillMode.className = "mini-pill ok";
-      } else if (mode === "observe_only" || mode === "voice_control") {
+      } else if (imode === "vision_starting" || imode === "vision_paused" || imode === "observe_only") {
         pillMode.className = "mini-pill warn";
       } else {
         pillMode.className = "mini-pill muted";
@@ -921,7 +971,17 @@
     }
 
     if (modeTitle) {
-      modeTitle.textContent = mode.replace("_", " ").toUpperCase();
+      if (imode === "vision_active") {
+        modeTitle.textContent = "VISION CONTROL (ACTIVE)";
+      } else if (imode === "vision_paused") {
+        modeTitle.textContent = "VISION CONTROL (PAUSED)";
+      } else if (imode === "vision_starting") {
+        modeTitle.textContent = "VISION STARTING...";
+      } else if (imode === "emergency_stopped") {
+        modeTitle.textContent = "EMERGENCY STOPPED";
+      } else {
+        modeTitle.textContent = "NORMAL (PHYSICAL INPUT)";
+      }
     }
 
     if (fpsLine) {
@@ -933,14 +993,17 @@
     }
 
     if (statusBadge) {
-      if (engine.emergency_stop) {
+      if (engine.emergency_stop || imode === "emergency_stopped") {
         statusBadge.textContent = "HALTED";
         statusBadge.className = "mini-badge warn";
-      } else if (engine.enabled) {
+      } else if (imode === "vision_paused") {
+        statusBadge.textContent = "PAUSED";
+        statusBadge.className = "mini-badge warn";
+      } else if (engine.enabled || imode === "vision_active") {
         statusBadge.textContent = "ACTIVE";
         statusBadge.className = "mini-badge ok";
       } else {
-        statusBadge.textContent = "STANDBY";
+        statusBadge.textContent = "NORMAL";
         statusBadge.className = "mini-badge";
       }
     }
@@ -983,8 +1046,21 @@
     }
   }
 
+  async function triggerToggleVisionMode() {
+    try {
+      const res = await apiPost("/api/vision/mode/toggle");
+      const modeStr = (res.mode || "normal").toUpperCase();
+      const msg = res.voice_response || `Interaction mode switched to: ${modeStr}`;
+      showToast(msg);
+    } catch (err) {
+      showToast(`Failed to toggle interaction mode: ${err.message}`);
+    }
+  }
+
   document.getElementById("btn-gesture-estop")?.addEventListener("click", triggerEmergencyStop);
   document.getElementById("btn-vision-estop")?.addEventListener("click", triggerEmergencyStop);
+  document.getElementById("btn-toggle-vision-mode")?.addEventListener("click", triggerToggleVisionMode);
+  document.getElementById("btn-top-toggle-mode")?.addEventListener("click", triggerToggleVisionMode);
 
   document.getElementById("btn-toggle-vision")?.addEventListener("click", async () => {
     const curMode = state.lastSnapshot?.vision?.mode || "privacy_mode";

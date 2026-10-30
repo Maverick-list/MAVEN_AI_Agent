@@ -49,6 +49,7 @@ class ToolRegistry:
         "uname": ["/usr/bin/uname", "-a"],
         "pactl_sinks": ["/usr/bin/pactl", "list", "short", "sinks"],
         "pactl_sources": ["/usr/bin/pactl", "list", "short", "sources"],
+        "python_version": ["/usr/bin/python3", "--version"],
     }
 
     def __init__(self, memory_engine=None):
@@ -215,6 +216,14 @@ class ToolRegistry:
             risk=ToolRisk.READ_ONLY,
             handler=self._tool_system_safe_command,
         ))
+        # Alias for backward compatibility and planner execution
+        self.register(ToolDefinition(
+            name="system_safe_command",
+            description="Run safe diagnostics and user workspace python scripts.",
+            parameters_schema={"type": "object"},
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_system_safe_command,
+        ))
 
         # 6. Filesystem List Directory
         self.register(ToolDefinition(
@@ -333,6 +342,70 @@ class ToolRegistry:
             handler=self._tool_desktop_emergency_stop,
         ))
 
+        # 14. Desktop Type Text
+        self.register(ToolDefinition(
+            name="desktop_type_text",
+            description="Type a string of text into the active focused desktop window.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to synthesize into active window"},
+                },
+                "required": ["text"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_desktop_type_text,
+        ))
+
+        # 15. Desktop Explain Screen
+        self.register(ToolDefinition(
+            name="desktop_explain_screen",
+            description="Inspect active windows and interactive UI targets to explain what is currently visible.",
+            parameters_schema={"type": "object"},
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_desktop_explain_screen,
+        ))
+
+        # 16. Filesystem Create Directory
+        self.register(ToolDefinition(
+            name="filesystem_create_dir",
+            description="Create a project directory safely within user home or projects path.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path to create (e.g. ~/projects/MyProject)"},
+                },
+                "required": ["path"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_filesystem_create_dir,
+        ))
+
+        # 17. Filesystem Write File
+        self.register(ToolDefinition(
+            name="filesystem_write_file",
+            description="Write text or source code into a file in user project space.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Target file path"},
+                    "content": {"type": "string", "description": "Source code or text content"},
+                },
+                "required": ["path", "content"],
+            },
+            risk=ToolRisk.CONSEQUENTIAL,
+            handler=self._tool_filesystem_write_file,
+        ))
+
+        # 18. Interaction Mode Toggle
+        self.register(ToolDefinition(
+            name="interaction_mode_toggle",
+            description="Toggle between Normal Mode (physical input) and Vision Control Mode.",
+            parameters_schema={"type": "object"},
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_interaction_mode_toggle,
+        ))
+
     # --- Tool Handlers ---
 
     def _tool_desktop_launch_app(self, params: Dict[str, Any], confirmed: bool = False) -> Dict[str, Any]:
@@ -356,15 +429,40 @@ class ToolRegistry:
 
     def _tool_system_safe_command(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
         cid = params.get("command_id", "")
+        raw_cmd = params.get("command", "").strip()
+
+        if not cid and raw_cmd:
+            if raw_cmd == "python3 --version":
+                cid = "python_version"
+            elif raw_cmd.startswith("python3 "):
+                # Safe execution of python3 script in user workspace
+                cmd_parts = raw_cmd.split()
+                proc = subprocess.run(cmd_parts, capture_output=True, text=True, timeout=5.0)
+                out = proc.stdout.strip()
+                return {
+                    "command": raw_cmd,
+                    "exit_code": proc.returncode,
+                    "stdout": out,
+                    "output": out,
+                    "stderr": proc.stderr.strip() if proc.stderr else None,
+                }
+            else:
+                for k, v in self.SAFE_COMMAND_ALLOWLIST.items():
+                    if raw_cmd == " ".join(v) or raw_cmd == k:
+                        cid = k
+                        break
+
         if cid not in self.SAFE_COMMAND_ALLOWLIST:
-            raise SecurityError(f"Command '{cid}' is not in the safe diagnostics allowlist.")
+            raise SecurityError(f"Command '{cid or raw_cmd}' is not in the safe diagnostics allowlist.")
 
         cmd = self.SAFE_COMMAND_ALLOWLIST[cid]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5.0)
+        out = proc.stdout.strip()
         return {
             "command": " ".join(cmd),
             "exit_code": proc.returncode,
-            "stdout": proc.stdout.strip(),
+            "stdout": out,
+            "output": out,
             "stderr": proc.stderr.strip() if proc.stderr else None,
         }
 
@@ -470,3 +568,44 @@ class ToolRegistry:
         mouse = VirtualMouse()
         mouse.emergency_stop()
         return {"status": "success", "action": "emergency_stop", "message": "Virtual mouse and gesture automation halted."}
+
+    def _tool_desktop_type_text(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        text = str(params.get("text", ""))
+        from maverick.vision.virtual_input import VirtualKeyboard
+        kb = VirtualKeyboard()
+        ok = kb.type_text(text)
+        return {"status": "success" if ok else "error", "text": text, "typed_text": text}
+
+    def _tool_desktop_explain_screen(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        from maverick.vision.screen import ScreenIntelligence
+        screen = ScreenIntelligence()
+        return screen.explain_screen()
+
+    def _tool_filesystem_create_dir(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        raw_path = params.get("path", "")
+        expanded = os.path.expanduser(raw_path)
+        # Sandbox check: must be in home or tmp
+        home = os.path.expanduser("~")
+        if not (expanded.startswith(home) or expanded.startswith("/tmp")):
+            raise SecurityPolicyViolationError(f"Directory creation restricted to user workspace: {raw_path}")
+        os.makedirs(expanded, exist_ok=True)
+        return {"status": "success", "created_directory": expanded}
+
+    def _tool_filesystem_write_file(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
+        raw_path = params.get("path", "")
+        content = params.get("content", "")
+        expanded = os.path.expanduser(raw_path)
+        home = os.path.expanduser("~")
+        if not (expanded.startswith(home) or expanded.startswith("/tmp")):
+            raise SecurityPolicyViolationError(f"File writing restricted to user workspace: {raw_path}")
+        parent = os.path.dirname(expanded)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(expanded, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"status": "success", "bytes_written": len(content), "path": expanded}
+
+    def _tool_interaction_mode_toggle(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        from maverick.vision.vision_controller import VisionController
+        vc = VisionController()
+        return vc.mode_manager.toggle_mode()
