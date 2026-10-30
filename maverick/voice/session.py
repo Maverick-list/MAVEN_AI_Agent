@@ -60,6 +60,7 @@ class VoiceSession:
 
         # Recorded utterance buffer
         self._audio_buffer: bytearray = bytearray()
+        self._has_detected_speech = False
         self._last_speech_time = 0.0
         self._listen_start_time = 0.0
 
@@ -115,8 +116,9 @@ class VoiceSession:
     def _start_listening(self) -> None:
         """Enter listening state and begin buffering user speech."""
         self._audio_buffer.clear()
+        self._has_detected_speech = False
         self._listen_start_time = time.time()
-        self._last_speech_time = time.time()
+        self._last_speech_time = self._listen_start_time
         self._transition_to(VoiceState.LISTENING)
 
     def step(self) -> Optional[bytes]:
@@ -137,7 +139,7 @@ class VoiceSession:
             time.sleep(0.05)
             return None
         elif self._state == VoiceState.SPEAKING and not self.tts.is_speaking():
-            self._transition_to(VoiceState.IDLE)
+            self.rearm()
 
         # 1. State: IDLE - Monitor for wake word
         if self._state == VoiceState.IDLE:
@@ -165,6 +167,7 @@ class VoiceSession:
             speech_threshold = max(self.config.silence_threshold_rms, floor + 0.035)
 
             if rms >= speech_threshold:
+                self._has_detected_speech = True
                 self._last_speech_time = now
 
             # Check silence duration
@@ -179,19 +182,18 @@ class VoiceSession:
                 voice_logger.utterance_ready(len(utterance), total_elapsed, trigger="max_recording_limit")
                 return utterance
 
-            # Utterance complete when silence threshold met after at least 0.5s recording
-            if total_elapsed > 0.5 and silence_elapsed >= self.config.silence_duration_seconds:
+            # Utterance complete when speech was detected and trailing silence duration is met
+            if self._has_detected_speech and silence_elapsed >= self.config.silence_duration_seconds:
                 self._transition_to(VoiceState.PROCESSING)
                 utterance = bytes(self._audio_buffer)
                 self._audio_buffer.clear()
                 voice_logger.utterance_ready(len(utterance), total_elapsed, trigger="silence_detected")
                 return utterance
 
-            # Timeout with no speech detected at all
-            if total_elapsed >= self.config.listening_timeout_seconds and len(self._audio_buffer) < 4000:
+            # Timeout with no speech detected within listening_timeout_seconds
+            if not self._has_detected_speech and total_elapsed >= self.config.listening_timeout_seconds:
                 voice_logger.session_timeout(reason="no_speech_detected")
-                self._transition_to(VoiceState.IDLE)
-                self._audio_buffer.clear()
+                self.rearm()
                 return None
 
             return None
@@ -199,16 +201,30 @@ class VoiceSession:
         return None
 
     def speak(self, text: str, wait: bool = True) -> bool:
-        """Speak response text through TTS with feedback protection."""
+        """Speak response text through TTS with feedback protection and auto-rearm."""
         self._transition_to(VoiceState.SPEAKING)
         success = self.tts.speak(text, wait=wait)
         if wait:
-            self._transition_to(VoiceState.IDLE)
+            self.rearm()
         return success
+
+    def rearm(self) -> None:
+        """
+        Re-arm voice session for continuous listening after response delivery.
+        Stops active TTS, clears audio buffers, drains microphone pipe,
+        re-arms wake-word detection, and transitions cleanly to IDLE.
+        """
+        self.tts.stop()
+        self._audio_buffer.clear()
+        self._has_detected_speech = False
+        if hasattr(self.audio, "flush"):
+            self.audio.flush()
+        if hasattr(self.wake_detector, "rearm"):
+            self.wake_detector.rearm()
+        else:
+            self.wake_detector.reset()
+        self._transition_to(VoiceState.IDLE)
 
     def reset(self) -> None:
         """Reset session to clean idle state."""
-        self.tts.stop()
-        self._audio_buffer.clear()
-        self.wake_detector.reset()
-        self._transition_to(VoiceState.IDLE)
+        self.rearm()

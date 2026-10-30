@@ -25,6 +25,10 @@ class WakeWordDetector(ABC):
         """Reset internal detection state and timers."""
         pass
 
+    def rearm(self) -> None:
+        """Re-arm wake detector for the next interaction turn."""
+        self.reset()
+
 
 class LocalKeywordWakeWordDetector(WakeWordDetector):
     """
@@ -95,8 +99,24 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._last_check_time = 0.0
         self._last_burst_time = 0.0
         self._failed_checks = 0
-        self._noise_floor = 0.02
-        self._noise_floor_initialized = False
+        if self._noise_floor_initialized:
+            self._noise_floor = min(0.35, self._noise_floor)
+        else:
+            self._noise_floor = 0.02
+
+    def rearm(self) -> None:
+        """
+        Re-arm wake-word detection for the next interaction turn.
+        Clears buffered audio, resets check cooldown, and ensures debounce timer
+        allows immediate activation without erasing the calibrated acoustic noise floor.
+        """
+        self._ring_buffer.clear()
+        self._last_trigger_time = 0.0
+        self._last_check_time = 0.0
+        self._last_burst_time = 0.0
+        self._failed_checks = 0
+        if self._noise_floor > 0.45:
+            self._noise_floor = 0.35
 
     def process_frame(self, frame_bytes: bytes) -> bool:
         """
@@ -125,7 +145,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
 
         # Adaptively track ambient noise floor using asymmetric tracking
         if not self._noise_floor_initialized:
-            self._noise_floor = rms
+            self._noise_floor = min(0.40, rms)
             self._noise_floor_initialized = True
         else:
             if rms < self._noise_floor:

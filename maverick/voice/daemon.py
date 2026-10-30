@@ -121,42 +121,52 @@ class VoiceDaemon:
                     cpu_pct=cpu_pct,
                 )
 
-                # Execute one step in voice session
-                utterance = self.session.step()
+                try:
+                    # Execute one step in voice session
+                    utterance = self.session.step()
 
-                if utterance:
-                    # Speech-to-Text invocation
-                    t_stt = time.time()
-                    voice_logger.stt_start(len(utterance))
+                    if utterance:
+                        # Speech-to-Text invocation
+                        t_stt = time.time()
+                        voice_logger.stt_start(len(utterance))
 
-                    try:
-                        transcript = self.controller.stt.transcribe(utterance)
-                    except Exception as exc:
-                        voice_logger.stt_failure(str(exc))
-                        self.session.reset()
-                        continue
+                        try:
+                            transcript = self.controller.stt.transcribe(utterance)
+                        except Exception as exc:
+                            voice_logger.stt_failure(str(exc))
+                            self.session.rearm()
+                            continue
 
-                    duration_stt = time.time() - t_stt
+                        duration_stt = time.time() - t_stt
 
-                    if not transcript or not transcript.strip():
-                        voice_logger.stt_empty(duration_stt, reason="silence_or_ambient_noise")
-                        self.session.reset()
-                        continue
+                        if not transcript or not transcript.strip():
+                            voice_logger.stt_empty(duration_stt, reason="silence_or_ambient_noise")
+                            self.session.rearm()
+                            continue
 
-                    voice_logger.stt_complete(transcript.strip(), duration_stt)
+                        voice_logger.stt_complete(transcript.strip(), duration_stt)
 
-                    # Intent Dispatch and Action Execution
-                    res = self.controller.handle_voice_command(transcript)
-                    response_text = res.get("response", "")
+                        # Intent Dispatch and Action Execution
+                        res = self.controller.handle_voice_command(transcript)
+                        response_text = res.get("response", "")
 
-                    # Verbal Feedback
-                    if response_text:
-                        voice_logger.tts_start(response_text)
-                        t_tts = time.time()
-                        self.session.speak(response_text, wait=True)
-                        voice_logger.tts_complete(time.time() - t_tts)
+                        # Verbal Feedback
+                        if response_text:
+                            voice_logger.tts_start(response_text)
+                            t_tts = time.time()
+                            self.session.speak(response_text, wait=True)
+                            voice_logger.tts_complete(time.time() - t_tts)
 
-                    self.session.reset()
+                        # Re-arm continuous listening and flush microphone pipe
+                        if hasattr(self.session.audio, "flush"):
+                            self.session.audio.flush()
+                        self.session.rearm()
+
+                except Exception as iter_err:
+                    voice_logger.exception("VoiceDaemon.step", iter_err)
+                    if hasattr(self.session.audio, "flush"):
+                        self.session.audio.flush()
+                    self.session.rearm()
 
                 # Sleep small delta to yield CPU during IDLE
                 time.sleep(0.01)

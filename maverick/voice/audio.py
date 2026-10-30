@@ -143,47 +143,85 @@ class AudioCapture:
     def start(self) -> bool:
         """Start streaming microphone input."""
         with self._lock:
-            if self._is_capturing and self._proc and self._proc.poll() is None:
-                return True
+            return self._start_capture_unlocked()
 
-            # Prefer arecord or pw-record
-            backend = shutil.which("arecord")
-            if not backend:
-                backend = shutil.which("pw-record")
+    def _start_capture_unlocked(self) -> bool:
+        """Internal start helper without locking."""
+        if self._is_capturing and self._proc and self._proc.poll() is None:
+            return True
 
-            if not backend:
-                return False
-
-            cmd = [
-                backend,
-                "-q",
-                "-f", "S16_LE",
-                "-r", str(self.config.sample_rate),
-                "-c", str(self.config.channels),
-                "-t", "raw",
-            ]
-
+        if self._proc:
             try:
-                self._proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    bufsize=self.config.chunk_size * 4,
-                )
-                self._is_capturing = True
-                return True
+                self._proc.terminate()
             except Exception:
-                self._is_capturing = False
-                self._proc = None
-                return False
+                pass
+            self._proc = None
+
+        # Prefer arecord or pw-record
+        backend = shutil.which("arecord")
+        if not backend:
+            backend = shutil.which("pw-record")
+
+        if not backend:
+            self._is_capturing = False
+            return False
+
+        cmd = [
+            backend,
+            "-q",
+            "-f", "S16_LE",
+            "-r", str(self.config.sample_rate),
+            "-c", str(self.config.channels),
+            "-t", "raw",
+        ]
+
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=self.config.chunk_size * 4,
+            )
+            self._is_capturing = True
+            return True
+        except Exception:
+            self._is_capturing = False
+            self._proc = None
+            return False
+
+    def flush(self) -> None:
+        """Discard any stale unread audio buffered in the OS pipe (e.g. after TTS playback)."""
+        with self._lock:
+            if not self._is_capturing or not self._proc or not self._proc.stdout:
+                return
+            try:
+                import fcntl
+                fd = self._proc.stdout.fileno()
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                try:
+                    while True:
+                        buf = os.read(fd, 65536)
+                        if not buf:
+                            break
+                except (BlockingIOError, InterruptedError):
+                    pass
+                finally:
+                    fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+            except Exception:
+                pass
 
     def read_chunk(self, chunk_size: Optional[int] = None) -> bytes:
         """
         Read one frame chunk of audio bytes (default 1024 samples = 2048 bytes).
-        Returns empty bytes on EOF or error.
+        Returns empty bytes on EOF or error. Automatically recovers from dead process.
         """
-        if not self._is_capturing or not self._proc or not self._proc.stdout:
-            return b""
+        with self._lock:
+            if not self._is_capturing or not self._proc or self._proc.poll() is not None:
+                if self._is_capturing:
+                    self._start_capture_unlocked()
+                if not self._proc or not self._proc.stdout:
+                    return b""
 
         samples = chunk_size or self.config.chunk_size
         bytes_to_read = samples * self.config.sample_width_bytes * self.config.channels
@@ -196,6 +234,9 @@ class AudioCapture:
         try:
             data = self._proc.stdout.read(bytes_to_read)
             if not data:
+                with self._lock:
+                    if self._is_capturing:
+                        self._start_capture_unlocked()
                 return b""
             return data
         except Exception:

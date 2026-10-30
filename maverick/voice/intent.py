@@ -194,7 +194,7 @@ class BilingualIntentClassifier:
         if re.search(r"\b(cpu|processor|prosesor)\b", clean):
             return {"intent": "system_cpu", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
 
-        if re.search(r"\b(desktop\s+context|summarize\s+desktop|ringkasan\s+desktop|kondisi\s+laptop\w*|keadaan\s+laptop\w*|ringkasan\s+sistem|status\s+desktop|happening\s+on\s+desktop)\b", clean):
+        if re.search(r"\b(desktop\s+context|summarize\s+desktop|ringkasan\s+(?:konteks\s+)?desktop|kondisi\s+laptop\w*|keadaan\s+laptop\w*|ringkasan\s+sistem|status\s+desktop|happening\s+on\s+desktop)\b", clean):
             return {"intent": "context_summary", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
 
         if re.search(r"\b(running\s+(?:authorized\s+)?apps|running\s+(?:authorized\s+)?applications|active\s+applications|apps?\s+(?:are\s+)?running|applications\s+(?:are\s+)?running|aplikasi\s+berjalan|aplikasi\s+aktif|aplikasi\s+.*(?:sedang\s+)?berjalan)\b", clean):
