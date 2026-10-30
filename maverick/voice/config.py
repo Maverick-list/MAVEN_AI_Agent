@@ -1,7 +1,132 @@
 """Maverick DevOS - Voice Interaction Configuration."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+import json
+import os
+from typing import Any, Dict, List, Optional
+
+CONFIG_DIR = os.path.expanduser("~/.config/maverick")
+ELEVENLABS_ENV_FILE = os.path.join(CONFIG_DIR, "elevenlabs.env")
+VOICE_SETTINGS_FILE = os.path.join(CONFIG_DIR, "voice_settings.json")
+
+# Calm, authoritative JARVIS-inspired ElevenLabs voice presets (Multilingual v2 compatible)
+DEFAULT_ELEVENLABS_VOICE_ID = "onwK4e9ZLuTAKqWW03F9"  # Daniel (British, calm, authoritative)
+DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
+
+
+def _read_env_file_dict(path: str = ELEVENLABS_ENV_FILE) -> Dict[str, str]:
+    """Read KEY=VALUE pairs from ~/.config/maverick/elevenlabs.env without logging values."""
+    values: Dict[str, str] = {}
+    if not os.path.isfile(path):
+        return values
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    if k:
+                        values[k] = v
+    except Exception:
+        pass
+    return values
+
+
+def get_elevenlabs_api_key(env_file: str = ELEVENLABS_ENV_FILE) -> str:
+    """
+    Resolve ElevenLabs API key exclusively from environment variables or local 0600 env file.
+    Never persists, prints, or exposes the secret key in dataclass fields or API responses.
+    """
+    env_key = (os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("XI_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    file_vars = _read_env_file_dict(env_file)
+    return (file_vars.get("ELEVENLABS_API_KEY") or file_vars.get("XI_API_KEY") or "").strip()
+
+
+def load_voice_settings(settings_file: str = VOICE_SETTINGS_FILE) -> Dict[str, Any]:
+    """Load non-secret user voice configuration overrides from ~/.config/maverick/voice_settings.json."""
+    if not os.path.isfile(settings_file):
+        return {}
+    try:
+        with open(settings_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                # Enforce defense-in-depth: strip any accidental secret-like keys
+                return {
+                    k: v
+                    for k, v in data.items()
+                    if "key" not in k.lower() and "secret" not in k.lower() and "token" not in k.lower()
+                }
+    except Exception:
+        pass
+    return {}
+
+
+def save_voice_settings(updates: Dict[str, Any], settings_file: str = VOICE_SETTINGS_FILE) -> Dict[str, Any]:
+    """Persist non-secret voice tuning settings with 0600 permissions."""
+    allowed_keys = {
+        "tts_engine",
+        "elevenlabs_voice_id",
+        "elevenlabs_model_id",
+        "elevenlabs_stability",
+        "elevenlabs_similarity_boost",
+        "elevenlabs_style",
+        "elevenlabs_speed",
+        "elevenlabs_use_speaker_boost",
+        "tts_rate",
+        "tts_pitch",
+        "tts_volume",
+    }
+    current = load_voice_settings(settings_file)
+    for k, v in updates.items():
+        if k in allowed_keys:
+            current[k] = v
+
+    os.makedirs(os.path.dirname(settings_file), mode=0o700, exist_ok=True)
+    tmp_path = f"{settings_file}.tmp"
+    fd = os.open(tmp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with open(fd, "w", encoding="utf-8") as f:
+        json.dump(current, f, indent=2)
+        f.flush()
+    os.replace(tmp_path, settings_file)
+    try:
+        os.chmod(settings_file, 0o600)
+    except OSError:
+        pass
+    return current
+
+
+def _default_voice_id() -> str:
+    env_vid = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
+    if env_vid:
+        return env_vid
+    saved = load_voice_settings()
+    if saved.get("elevenlabs_voice_id"):
+        return str(saved["elevenlabs_voice_id"]).strip()
+    file_vars = _read_env_file_dict()
+    if file_vars.get("ELEVENLABS_VOICE_ID"):
+        return file_vars["ELEVENLABS_VOICE_ID"].strip()
+    return DEFAULT_ELEVENLABS_VOICE_ID
+
+
+def _default_model_id() -> str:
+    env_mid = os.environ.get("ELEVENLABS_MODEL_ID", "").strip()
+    if env_mid:
+        return env_mid
+    saved = load_voice_settings()
+    if saved.get("elevenlabs_model_id"):
+        return str(saved["elevenlabs_model_id"]).strip()
+    file_vars = _read_env_file_dict()
+    if file_vars.get("ELEVENLABS_MODEL_ID"):
+        return file_vars["ELEVENLABS_MODEL_ID"].strip()
+    return DEFAULT_ELEVENLABS_MODEL_ID
 
 
 @dataclass
@@ -31,12 +156,22 @@ class VoiceConfig:
     silence_duration_seconds: float = 1.2
     listening_timeout_seconds: float = 8.0
 
-    # Text-to-Speech (TTS) settings
-    tts_engine: str = "speech_dispatcher"  # local /usr/bin/spd-say
+    # Text-to-Speech (TTS) primary & fallback settings
+    tts_engine: str = "elevenlabs"  # primary 'elevenlabs' with automatic fallback to 'speech_dispatcher'
     tts_voice: str = "default"
-    tts_rate: int = 15  # -100 to +100
+    tts_rate: int = 15  # -100 to +100 (Speech Dispatcher fallback)
     tts_pitch: int = 0  # -100 to +100
     tts_volume: int = 100  # 0 to 100
+
+    # ElevenLabs neural voice tuning (JARVIS calm & confident profile)
+    elevenlabs_voice_id: str = field(default_factory=_default_voice_id)
+    elevenlabs_model_id: str = field(default_factory=_default_model_id)
+    elevenlabs_stability: float = 0.55
+    elevenlabs_similarity_boost: float = 0.80
+    elevenlabs_style: float = 0.15
+    elevenlabs_speed: float = 1.0
+    elevenlabs_use_speaker_boost: bool = True
+    elevenlabs_timeout_sec: float = 12.0
 
     # Audio devices
     device_input: str = "default"
@@ -51,3 +186,34 @@ class VoiceConfig:
 
     # Confirmation requirement for consequential actions
     enforce_confirmation: bool = True
+
+    def __post_init__(self) -> None:
+        """Apply persisted non-secret user tuning overrides if present."""
+        saved = load_voice_settings()
+        if not saved:
+            return
+        if "tts_engine" in saved and saved["tts_engine"] in ("elevenlabs", "speech_dispatcher"):
+            self.tts_engine = str(saved["tts_engine"])
+        for float_key, lo, hi in (
+            ("elevenlabs_stability", 0.0, 1.0),
+            ("elevenlabs_similarity_boost", 0.0, 1.0),
+            ("elevenlabs_style", 0.0, 1.0),
+            ("elevenlabs_speed", 0.7, 1.2),
+        ):
+            if float_key in saved:
+                try:
+                    setattr(self, float_key, max(lo, min(hi, float(saved[float_key]))))
+                except (TypeError, ValueError):
+                    pass
+        if "elevenlabs_use_speaker_boost" in saved:
+            self.elevenlabs_use_speaker_boost = bool(saved["elevenlabs_use_speaker_boost"])
+        for int_key, lo_i, hi_i in (
+            ("tts_rate", -100, 100),
+            ("tts_pitch", -100, 100),
+            ("tts_volume", 0, 100),
+        ):
+            if int_key in saved:
+                try:
+                    setattr(self, int_key, max(lo_i, min(hi_i, int(saved[int_key]))))
+                except (TypeError, ValueError):
+                    pass

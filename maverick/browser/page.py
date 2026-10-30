@@ -18,9 +18,10 @@ class PageInspectorError(Exception):
 # Redaction patterns for secrets that must never leak into extracted page text
 _TOKEN_REDACTION_PATTERNS = [
     (re.compile(r"Bearer\s+[a-zA-Z0-9_\-\.]{15,}", re.IGNORECASE), "Bearer [REDACTED_TOKEN]"),
+    (re.compile(r"(xi-api-key\s*[:=]\s*)[a-zA-Z0-9_\-\.]{8,}", re.IGNORECASE), r"\1[REDACTED_API_KEY]"),
     (re.compile(r"eyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]+"), "[REDACTED_JWT]"),
     (re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[a-zA-Z0-9]{36}\b"), "[REDACTED_GITHUB_TOKEN]"),
-    (re.compile(r"\bsk-[a-zA-Z0-9_\-]{20,}\b"), "[REDACTED_API_KEY]"),
+    (re.compile(r"\bsk[-_][a-zA-Z0-9_\-]{16,}\b"), "[REDACTED_API_KEY]"),
     (re.compile(r"\b(?:\d{4}[ -]?){3}\d{4}\b"), "[REDACTED_CARD]"),
 ]
 

@@ -10,7 +10,9 @@ from typing import Any, Dict, Optional
 # Masking patterns for sensitive authentication credentials and tokens
 SENSITIVE_PATTERNS = [
     (re.compile(r"(bearer\s+)[A-Za-z0-9_\-\.]{8,}", re.IGNORECASE), r"\1[REDACTED_TOKEN]"),
+    (re.compile(r"(xi-api-key\s*[:=]\s*)[A-Za-z0-9_\-\.]{6,}", re.IGNORECASE), r"\1[REDACTED_API_KEY]"),
     (re.compile(r"((?:api[-_]?key|token|secret|password|passwd|auth)\s*[:=]\s*)[A-Za-z0-9_\-\.]{6,}", re.IGNORECASE), r"\1[REDACTED_CREDENTIAL]"),
+    (re.compile(r"\bsk[-_][A-Za-z0-9_\-]{16,}\b"), "[REDACTED_ELEVENLABS_OR_API_KEY]"),
     (re.compile(r"\bAIza[0-9A-Za-z-_]{35}\b"), "[REDACTED_GOOGLE_API_KEY]"),
     (re.compile(r"\b[0-9]{8,10}:[a-zA-Z0-9_-]{35}\b"), "[REDACTED_TELEGRAM_BOT_TOKEN]"),
     (re.compile(r"\b[MNO][a-zA-Z0-9_-]{23,25}\.[a-zA-Z0-9_-]{6}\.[a-zA-Z0-9_-]{27,}\b"), "[REDACTED_DISCORD_TOKEN]"),
@@ -239,11 +241,21 @@ class VoiceLogger:
         )
 
     # 8. Text-to-Speech (TTS)
-    def tts_start(self, text: str, engine: str = "speech_dispatcher") -> None:
+    def tts_start(self, text: str, engine: str = "elevenlabs") -> None:
         self._log("TTS", "INFO", f"Speaking response: \"{text}\"", engine=engine)
 
-    def tts_complete(self, duration_sec: float) -> None:
-        self._log("TTS", "DEBUG", "TTS speech output completed", duration_sec=round(duration_sec, 2))
+    def tts_fallback(self, primary_engine: str, fallback_engine: str, reason: str) -> None:
+        self._log(
+            "TTS", "WARNING",
+            f"Primary TTS '{primary_engine}' unavailable; falling back to '{fallback_engine}'",
+            reason=reason,
+        )
+
+    def tts_complete(self, duration_sec: float, engine: Optional[str] = None) -> None:
+        kwargs: Dict[str, Any] = {"duration_sec": round(duration_sec, 2)}
+        if engine:
+            kwargs["engine"] = engine
+        self._log("TTS", "DEBUG", "TTS speech output completed", **kwargs)
 
     def tts_interrupted(self) -> None:
         self._log("TTS", "WARNING", "TTS speech interrupted by user silence/stop request")

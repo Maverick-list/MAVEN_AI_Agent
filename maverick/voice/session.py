@@ -8,7 +8,7 @@ from typing import Callable, List, Optional
 from maverick.voice.audio import AudioCapture, calculate_rms
 from maverick.voice.config import VoiceConfig
 from maverick.voice.observability import voice_logger
-from maverick.voice.tts import TTSProvider, SpeechDispatcherTTS
+from maverick.voice.tts import TTSProvider, SpeechDispatcherTTS, create_tts_provider
 from maverick.voice.wakeword import (
     WakeWordDetector,
     EnergySpectralWakeWordDetector,
@@ -50,7 +50,7 @@ class VoiceSession:
                 self.wake_detector = local_detector
             else:
                 self.wake_detector = EnergySpectralWakeWordDetector(self.config)
-        self.tts = tts or SpeechDispatcherTTS(self.config)
+        self.tts = tts or create_tts_provider(self.config)
 
         self._state = VoiceState.IDLE
         self._muted = self.config.muted

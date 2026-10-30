@@ -17,6 +17,8 @@ from maverick.voice.config import VoiceConfig
 STATE_DIR = os.path.expanduser("~/.local/state/maverick")
 PID_FILE = os.path.join(STATE_DIR, "maven-voice.pid")
 LOG_FILE = os.path.join(STATE_DIR, "maven-voice.log")
+DASHBOARD_PID_FILE = os.path.join(STATE_DIR, "maven-dashboard.pid")
+DASHBOARD_LOG_FILE = os.path.join(STATE_DIR, "maven-dashboard.log")
 
 
 def ensure_state_dir() -> None:
@@ -406,6 +408,83 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
+def get_dashboard_process_pid() -> Optional[int]:
+    """Retrieve PID of running Maven Control Center server if active."""
+    if not os.path.isfile(DASHBOARD_PID_FILE):
+        return None
+    try:
+        with open(DASHBOARD_PID_FILE, "r") as f:
+            pid = int(f.read().strip())
+        if psutil.pid_exists(pid):
+            proc = psutil.Process(pid)
+            if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+                cmdline = " ".join(proc.cmdline())
+                if "dashboard" in cmdline or "maverick" in cmdline:
+                    return pid
+        os.remove(DASHBOARD_PID_FILE)
+        return None
+    except Exception:
+        return None
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Launch or manage the local-only MAVEN JARVIS Control Center (127.0.0.1)."""
+    ensure_state_dir()
+    port = int(getattr(args, "port", 8765))
+    open_browser = bool(getattr(args, "open", False))
+
+    if getattr(args, "stop", False):
+        pid = get_dashboard_process_pid()
+        if not pid:
+            print("● Maven Control Center is not currently running.")
+            return 0
+        try:
+            proc = psutil.Process(pid)
+            proc.terminate()
+            proc.wait(timeout=3.0)
+        except Exception:
+            pass
+        if os.path.exists(DASHBOARD_PID_FILE):
+            os.remove(DASHBOARD_PID_FILE)
+        print(f"\033[92m✔ Stopped Maven Control Center (PID: {pid})\033[0m")
+        return 0
+
+    existing = get_dashboard_process_pid()
+    if existing:
+        url = f"http://127.0.0.1:{port}"
+        print(f"\033[92m● Maven Control Center is active at {url} (PID: {existing})\033[0m")
+        if open_browser and shutil.which("xdg-open"):
+            subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 0
+
+    if getattr(args, "daemon", False):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = os.environ.copy()
+        env["PYTHONPATH"] = f"{project_root}:{env.get('PYTHONPATH', '')}"
+        log_fd = open(DASHBOARD_LOG_FILE, "a")
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "maverick.dashboard.server", "--port", str(port)],
+            cwd=project_root,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
+            start_new_session=True,
+        )
+        with open(DASHBOARD_PID_FILE, "w") as f:
+            f.write(str(proc.pid))
+        url = f"http://127.0.0.1:{port}"
+        print(f"\033[92m✔ Maven Control Center started in background at {url} (PID: {proc.pid})\033[0m")
+        if open_browser and shutil.which("xdg-open"):
+            time.sleep(0.4)
+            subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 0
+
+    from maverick.dashboard.server import run_dashboard_server
+    run_dashboard_server(port=port, open_browser=open_browser)
+    return 0
+
+
 def main() -> None:
     """Main launcher entry point."""
     parser = argparse.ArgumentParser(
@@ -439,6 +518,13 @@ def main() -> None:
     prof_subs.add_parser("light", help="Switch to LIGHT mode (everyday use)")
     prof_subs.add_parser("developer", help="Switch to DEVELOPER mode (CDP, context, diagnostics)")
 
+    # 7. dashboard
+    dash_p = subparsers.add_parser("dashboard", help="Launch local-only MAVEN JARVIS Holographic Control Center")
+    dash_p.add_argument("--port", type=int, default=8765, help="Localhost port (default: 8765)")
+    dash_p.add_argument("-d", "--daemon", action="store_true", help="Run dashboard server in background")
+    dash_p.add_argument("--open", action="store_true", help="Open Control Center in default browser")
+    dash_p.add_argument("--stop", action="store_true", help="Stop background dashboard server")
+
     args = parser.parse_args()
 
     if args.action == "start":
@@ -453,6 +539,8 @@ def main() -> None:
         sys.exit(cmd_doctor(args))
     elif args.action == "profile":
         sys.exit(cmd_profile(args))
+    elif args.action == "dashboard":
+        sys.exit(cmd_dashboard(args))
 
 
 if __name__ == "__main__":

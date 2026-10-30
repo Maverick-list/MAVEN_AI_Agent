@@ -23,7 +23,7 @@ from maverick.voice.intent import BilingualIntentClassifier
 from maverick.voice.observability import voice_logger
 from maverick.voice.session import VoiceSession, VoiceState
 from maverick.voice.stt import LocalIntentSTTProvider, STTProvider, WhisperCppSTTProvider
-from maverick.voice.tts import SpeechDispatcherTTS, TTSProvider
+from maverick.voice.tts import SpeechDispatcherTTS, TTSProvider, create_tts_provider
 
 
 class VoiceController:
@@ -41,7 +41,8 @@ class VoiceController:
         activity_logger: Optional[ActivityLogger] = None,
     ):
         self.config = config or VoiceConfig()
-        self.session = session or VoiceSession(self.config)
+        self.tts = tts or (session.tts if session is not None else create_tts_provider(self.config))
+        self.session = session or VoiceSession(self.config, tts=self.tts)
         if stt is not None:
             self.stt = stt
         else:
@@ -50,7 +51,6 @@ class VoiceController:
                 self.stt = whisper_stt
             else:
                 self.stt = LocalIntentSTTProvider(self.config)
-        self.tts = tts or SpeechDispatcherTTS(self.config)
         self.logger = activity_logger or ActivityLogger()
 
     def handle_voice_command(self, raw_text: str, confirmed: bool = False) -> Dict[str, Any]:

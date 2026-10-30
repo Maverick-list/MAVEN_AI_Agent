@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MAVEN JARVIS // Holographic Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@500;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-state="idle">
+  <!-- Subtle architectural blueprint grid & ambient glow -->
+  <div class="hud-backdrop" aria-hidden="true">
+    <div class="hud-grid"></div>
+    <div class="hud-vignette"></div>
+  </div>
+
+  <!-- TOP BAR -->
+  <header class="top-bar">
+    <div class="brand-cluster">
+      <span class="brand-emblem" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26">
+          <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="16 5" />
+          <circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.75" />
+          <circle cx="16" cy="16" r="3.2" fill="currentColor" />
+        </svg>
+      </span>
+      <h1 class="brand-title">
+        <span class="brand-strong">MAVEN JARVIS</span>
+        <span class="brand-sep">//</span>
+        <span class="brand-sub">CONTROL CENTER</span>
+      </h1>
+    </div>
+
+    <div class="link-pill" id="connection-pill" title="Bound strictly to 127.0.0.1 loopback">
+      <span class="link-dot" id="connection-dot"></span>
+      <span id="connection-label">127.0.0.1 LOCAL LINK · CONNECTING</span>
+    </div>
+
+    <div class="top-meta">
+      <div class="clock-readout">
+        <span id="clock-time">--:--:--</span>
+        <span class="clock-tz" id="clock-tz">WIB</span>
+      </div>
+      <div class="profile-pill" id="profile-badge" title="Operational Profile & Linux Display Session">
+        <span class="profile-icon">⚙</span>
+        <span id="system-mode-label">DEVELOPER MODE · WAYLAND</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN 3-COLUMN HOLOGRAPHIC WORKSPACE -->
+  <main class="hud-stage">
+    <!-- LEFT PANEL -->
+    <aside class="hud-column left-panel" aria-label="System and Hardware Telemetry">
+      <!-- 1. System Status + CPU & RAM -->
+      <section class="glass-card" id="card-system">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">SYSTEM STATUS:</h2>
+            <p class="card-status-line" id="daemon-status-line">CHECKING · PID --</p>
+          </div>
+          <span class="mini-badge" id="battery-badge" title="Battery Status">--%</span>
+        </div>
+
+        <div class="cpu-row">
+          <div class="cpu-donut-wrap">
+            <svg class="cpu-donut" viewBox="0 0 100 100">
+              <circle class="donut-track" cx="50" cy="50" r="40" />
+              <circle class="donut-fill" id="cpu-donut-arc" cx="50" cy="50" r="40" stroke-dasharray="251.3" stroke-dashoffset="225" />
+            </svg>
+            <div class="cpu-donut-center">
+              <span class="donut-title">CPU</span>
+              <span class="donut-val" id="cpu-percent-text">0.0% · --C</span>
+            </div>
+          </div>
+
+          <div class="cores-chart-wrap">
+            <div class="sub-metric-title" id="cores-header">CORES · -- THREADS</div>
+            <div class="cores-bars" id="cores-bars" aria-label="Per-thread CPU load"></div>
+          </div>
+        </div>
+
+        <div class="ram-section">
+          <div class="ram-label-row">
+            <span class="ram-title">RAM <strong id="ram-used-total">-- / -- GiB</strong></span>
+            <span class="ram-avail" id="ram-avail-label">-- GiB free</span>
+          </div>
+          <div class="segmented-bar" id="ram-segments" role="progressbar" aria-valuemin="0" aria-valuemax="100"></div>
+        </div>
+      </section>
+
+      <!-- 2. Microphone Status -->
+      <section class="glass-card" id="card-mic">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">MIC:</h2>
+            <p class="card-subline" id="mic-device-line">DETECTING INPUT · PIPEWIRE</p>
+          </div>
+          <span class="mini-badge" id="mic-vad-badge">QUIET</span>
+        </div>
+        <div class="spectrum-bars" id="mic-spectrum" aria-label="Live microphone RMS history"></div>
+        <div class="card-foot-note" id="mic-foot-note">Wake phrases: "Hey Maven", "Maven", "Halo Maven"</div>
+      </section>
+
+      <!-- 3. Audio Output Status -->
+      <section class="glass-card" id="card-audio-out">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">AUDIO OUTPUT:</h2>
+            <p class="card-primary-value" id="speaker-device-name">DETECTING SPEAKER</p>
+            <p class="card-subline" id="speaker-subline">PIPEWIRE SINK · CHECKING</p>
+          </div>
+        </div>
+        <div class="card-foot-note" id="whisper-stt-line">STT: Whisper.cpp checking...</div>
+      </section>
+    </aside>
+
+    <!-- CENTER HERO: THE JARVIS HOLOGRAPHIC CORE (45-55% VIEWPORT) -->
+    <section class="core-arena" aria-label="JARVIS Intelligence Core">
+      <div class="core-reticle-tl" aria-hidden="true"></div>
+      <div class="core-reticle-tr" aria-hidden="true"></div>
+      <div class="core-reticle-bl" aria-hidden="true"></div>
+      <div class="core-reticle-br" aria-hidden="true"></div>
+
+      <div class="core-canvas-shell" id="core-shell">
+        <canvas id="jarvis-core-canvas"></canvas>
+      </div>
+
+      <div class="core-status-dock">
+        <div class="core-state-pill" id="core-state-pill">
+          <span class="core-state-dot" id="core-state-dot"></span>
+          <span id="core-state-label">IDLE · WAKE ARMED</span>
+        </div>
+        <div class="core-telemetry-caption" id="core-telemetry-caption">
+          Daemon telemetry synchronizing...
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL -->
+    <aside class="hud-column right-panel" aria-label="AI Gateway, Conversation, Activity and Voice Engine">
+      <!-- 1. AI Model & Gateway + Conversation History -->
+      <section class="glass-card chat-card" id="card-gateway">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">AI GATEWAY:</h2>
+            <p class="card-status-line" id="gateway-status-line">GEMINI 2.5 FLASH · CHECKING</p>
+          </div>
+          <span class="mini-badge" id="channels-badge" title="Messaging Channels">TG · DC</span>
+        </div>
+
+        <div class="conversation-stream" id="conversation-stream" aria-live="polite">
+          <div class="chat-empty">Awaiting voice or text interaction. Say <strong>"Hey Maven"</strong> or type below.</div>
+        </div>
+      </section>
+
+      <!-- 2. Current Activity & Security Gates -->
+      <section class="glass-card" id="card-activity">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">CURRENT ACTIVITY:</h2>
+            <p class="card-primary-value" id="current-activity-title">MONITORING DESKTOP · IDLE</p>
+            <p class="card-subline" id="security-posture-line">CONFIRMATION GATE ARMED · WHATSAPP OFF</p>
+          </div>
+          <button type="button" class="ghost-chip" id="btn-open-logs" title="Inspect live maven-voice.log">LOGS</button>
+        </div>
+        <div class="card-foot-note" id="running-apps-line">Authorized apps active: --</div>
+      </section>
+
+      <!-- 3. Voice Engine Status -->
+      <section class="glass-card" id="card-voice-engine">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">VOICE ENGINE:</h2>
+            <p class="card-primary-value" id="tts-engine-title">ELEVENLABS</p>
+            <p class="card-subline" id="tts-engine-subline">PRIMARY · MULTILINGUAL V2</p>
+          </div>
+          <span class="mini-badge" id="tts-health-badge">CHECKING</span>
+        </div>
+        <div class="card-foot-note" id="tts-fallback-line">Fallback: Speech Dispatcher (spd-say) ready</div>
+      </section>
+    </aside>
+  </main>
+
+  <!-- BOTTOM CONTROL BAR -->
+  <footer class="bottom-bar">
+    <div class="control-buttons" role="toolbar" aria-label="Maven System Controls">
+      <button type="button" class="hud-btn" id="btn-daemon-start">[ START ]</button>
+      <button type="button" class="hud-btn hud-btn-warn" id="btn-daemon-stop">[ STOP ]</button>
+      <button type="button" class="hud-btn" id="btn-daemon-restart">[ RESTART ]</button>
+      <button type="button" class="hud-btn" id="btn-mic-test">[ MIC TEST ]</button>
+      <div class="voice-test-group">
+        <button type="button" class="hud-btn" id="btn-voice-test">[ VOICE TEST ]</button>
+        <select id="voice-test-lang" class="hud-lang-select" aria-label="Voice test language" title="Voice Test Language">
+          <option value="en">EN</option>
+          <option value="id">ID</option>
+        </select>
+      </div>
+      <button type="button" class="hud-btn" id="btn-open-settings">[ VOICE SETTINGS ]</button>
+    </div>
+
+    <form class="command-form" id="command-form" autocomplete="off">
+      <input
+        type="text"
+        id="command-input"
+        class="command-input"
+        placeholder='Ask Maven or say "Hey Maven"...'
+        aria-label="Send instruction or question to Maven"
+      />
+      <button
+        type="button"
+        class="icon-btn active"
+        id="btn-toggle-speak-reply"
+        title="Speak Maven's replies aloud (toggle)"
+        aria-pressed="true"
+      >
+        🔊
+      </button>
+      <button type="submit" class="send-btn" id="btn-send-command" title="Execute command">
+        ➤
+      </button>
+    </form>
+  </footer>
+
+  <!-- TOAST BANNER -->
+  <div class="hud-toast" id="hud-toast" hidden></div>
+
+  <!-- SLIDE-OVER DRAWER: VOICE & SYSTEM SETTINGS -->
+  <div class="modal-backdrop" id="settings-modal" hidden>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="modal-header">
+        <h2 id="settings-title">VOICE ENGINE &amp; CORE CONFIGURATION</h2>
+        <button type="button" class="ghost-chip" id="btn-close-settings">CLOSE ✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="env-security-banner" id="elevenlabs-key-banner">
+          Checking ElevenLabs credential status...
+        </div>
+
+        <div class="form-grid">
+          <label class="field-block">
+            <span>Primary TTS Engine</span>
+            <select id="set-tts-engine">
+              <option value="elevenlabs">ElevenLabs Neural TTS (with spd-say auto-fallback)</option>
+              <option value="speech_dispatcher">Local Speech Dispatcher Only (Offline spd-say)</option>
+            </select>
+          </label>
+
+          <label class="field-block">
+            <span>ElevenLabs Voice Preset</span>
+            <select id="set-voice-preset"></select>
+          </label>
+
+          <label class="field-block">
+            <span>Custom Voice ID (ELEVENLABS_VOICE_ID)</span>
+            <input type="text" id="set-voice-id" placeholder="onwK4e9ZLuTAKqWW03F9" />
+          </label>
+
+          <label class="field-block">
+            <span>Synthesis Model</span>
+            <select id="set-model-id"></select>
+          </label>
+        </div>
+
+        <div class="sliders-grid">
+          <label class="slider-block">
+            <div class="slider-top"><span>Stability</span><strong id="val-stability">0.55</strong></div>
+            <input type="range" id="set-stability" min="0" max="1" step="0.05" value="0.55" />
+          </label>
+
+          <label class="slider-block">
+            <div class="slider-top"><span>Similarity Boost</span><strong id="val-similarity">0.80</strong></div>
+            <input type="range" id="set-similarity" min="0" max="1" step="0.05" value="0.80" />
+          </label>
+
+          <label class="slider-block">
+            <div class="slider-top"><span>Style Exaggeration</span><strong id="val-style">0.15</strong></div>
+            <input type="range" id="set-style" min="0" max="1" step="0.05" value="0.15" />
+          </label>
+
+          <label class="slider-block">
+            <div class="slider-top"><span>Delivery Speed</span><strong id="val-speed">1.00x</strong></div>
+            <input type="range" id="set-speed" min="0.70" max="1.20" step="0.05" value="1.00" />
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label class="field-block">
+            <span>Operational Profile</span>
+            <select id="set-profile">
+              <option value="developer">Developer Mode (Full Telemetry + Chrome CDP)</option>
+              <option value="light">Light Mode (Low Overhead Everyday Profile)</option>
+            </select>
+          </label>
+
+          <label class="field-block">
+            <span>Core Visual State Mode</span>
+            <select id="set-visual-override">
+              <option value="live">Live Operational State (Synced to Daemon)</option>
+              <option value="idle">Inspect State: IDLE (Calm Breathing)</option>
+              <option value="listening">Inspect State: LISTENING (Wake Armed)</option>
+              <option value="thinking">Inspect State: THINKING (Synaptic Vortex)</option>
+              <option value="speaking">Inspect State: SPEAKING (Harmonic Pulse)</option>
+              <option value="error">Inspect State: ERROR (Diagnostic Alert)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="preview-box">
+          <span class="preview-label">Voice Preview Phrase (Indonesian or English)</span>
+          <input
+            type="text"
+            id="preview-phrase-input"
+            value="Selamat siang. Sistem kecerdasan Maven JARVIS siap membantu Anda."
+          />
+          <div class="preview-actions">
+            <button type="button" class="hud-btn" id="btn-preview-en">[ PREVIEW ENGLISH ]</button>
+            <button type="button" class="hud-btn" id="btn-preview-id">[ PREVIEW INDONESIAN ]</button>
+            <button type="button" class="hud-btn hud-btn-warn" id="btn-stop-tts">[ STOP AUDIO ]</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="hud-btn hud-btn-primary" id="btn-save-settings">[ SAVE CONFIGURATION ]</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SLIDE-OVER DRAWER: LIVE STRUCTURED LOGS & ACTIVITY -->
+  <div class="modal-backdrop" id="logs-modal" hidden>
+    <div class="modal-panel modal-panel-wide" role="dialog" aria-modal="true" aria-labelledby="logs-title">
+      <div class="modal-header">
+        <h2 id="logs-title">LIVE TELEMETRY STREAM // maven-voice.log &amp; ACTIVITY</h2>
+        <button type="button" class="ghost-chip" id="btn-close-logs">CLOSE ✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="log-terminal" id="live-log-terminal"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden Web Audio element for FFT-synchronized browser TTS playback -->
+  <audio id="jarvis-tts-audio" preload="none" crossorigin="anonymous"></audio>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

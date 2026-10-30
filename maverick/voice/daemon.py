@@ -152,10 +152,14 @@ class VoiceDaemon:
 
                         # Verbal Feedback
                         if response_text:
-                            voice_logger.tts_start(response_text)
+                            active_eng = "elevenlabs"
+                            if hasattr(self.session.tts, "get_status"):
+                                active_eng = self.session.tts.get_status().get("active_engine", "elevenlabs")
+                            voice_logger.tts_start(response_text, engine=active_eng)
                             t_tts = time.time()
                             self.session.speak(response_text, wait=True)
-                            voice_logger.tts_complete(time.time() - t_tts)
+                            used_eng = getattr(self.session.tts, "last_used_engine", active_eng)
+                            voice_logger.tts_complete(time.time() - t_tts, engine=used_eng)
 
                         # Re-arm continuous listening and flush microphone pipe
                         if hasattr(self.session.audio, "flush"):

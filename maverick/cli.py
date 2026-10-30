@@ -469,7 +469,7 @@ def handle_voice_commands(args: argparse.Namespace) -> None:
     from maverick.voice.audio import list_audio_devices
     from maverick.voice.config import VoiceConfig
     from maverick.voice.controller import VoiceController
-    from maverick.voice.tts import SpeechDispatcherTTS
+    from maverick.voice.tts import SpeechDispatcherTTS, create_tts_provider
     from maverick.voice.ui import VoiceUI
 
     sub = args.voice_subcommand
@@ -479,6 +479,8 @@ def handle_voice_commands(args: argparse.Namespace) -> None:
         cfg = VoiceConfig()
         from maverick.voice.stt import WhisperCppSTTProvider
         whisper_stt = WhisperCppSTTProvider(cfg)
+        tts_engine = create_tts_provider(cfg)
+        tts_stat = tts_engine.get_status()
         output_result(
             {
                 "status": "success",
@@ -490,9 +492,12 @@ def handle_voice_commands(args: argparse.Namespace) -> None:
                     "language": cfg.stt_language,
                 },
                 "tts": {
-                    "engine": cfg.tts_engine,
-                    "voice": cfg.tts_voice,
-                    "available": shutil.which("spd-say") is not None,
+                    "engine": tts_stat["active_engine"],
+                    "preferred_engine": tts_stat["preferred_engine"],
+                    "voice": tts_stat["elevenlabs"]["voice_name"],
+                    "available": tts_stat["elevenlabs"]["configured"] or tts_stat["fallback"]["available"],
+                    "elevenlabs_configured": tts_stat["elevenlabs"]["configured"],
+                    "fallback_available": tts_stat["fallback"]["available"],
                 },
                 "wake_words": cfg.wake_words,
                 "listening_timeout_seconds": cfg.listening_timeout_seconds,
@@ -503,12 +508,13 @@ def handle_voice_commands(args: argparse.Namespace) -> None:
         )
 
     elif sub == "speak":
-        tts = SpeechDispatcherTTS()
+        tts = create_tts_provider()
         ok = tts.speak(args.text, wait=True)
         output_result(
             {
                 "status": "success" if ok else "error",
                 "action": "speak",
+                "engine": tts.last_used_engine,
                 "text": args.text,
             },
             pretty=args.pretty,
@@ -695,6 +701,11 @@ def main() -> None:
     profile_subs.add_parser("light", help="Switch to LIGHT mode (everyday laptop use)", parents=[base_parser])
     profile_subs.add_parser("developer", help="Switch to DEVELOPER mode (CDP, context engine, diagnostics)", parents=[base_parser])
 
+    # 10. Dashboard command parser
+    dash_parser = subparsers.add_parser("dashboard", help="Launch local-only MAVEN JARVIS Holographic Control Center", parents=[base_parser])
+    dash_parser.add_argument("--port", type=int, default=8765, help="Localhost port (default: 8765)")
+    dash_parser.add_argument("--open", action="store_true", help="Open dashboard in default browser")
+
     args = parser.parse_args()
 
     if args.command in ("app", "apps"):
@@ -715,6 +726,9 @@ def main() -> None:
         handle_voice_commands(args)
     elif args.command == "profile":
         handle_profile_commands(args)
+    elif args.command == "dashboard":
+        from maverick.dashboard.server import run_dashboard_server
+        run_dashboard_server(port=args.port, open_browser=args.open)
 
 
 if __name__ == "__main__":
