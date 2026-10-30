@@ -16,6 +16,14 @@ from maverick.media.spotify import (
     SpotifyControllerError,
     PlayerNotRunningError,
 )
+from maverick.browser.client import BrowserClient
+from maverick.browser.security import BrowserSecurityError
+from maverick.browser.lifecycle import BrowserLifecycleError
+from maverick.browser.tabs import TabManagerError
+from maverick.browser.navigation import NavigationError
+from maverick.browser.page import PageInspectorError
+from maverick.browser.interaction import InteractionError
+from maverick.browser.cdp import CDPError
 
 
 def output_result(data: Dict[str, Any], pretty: bool = False, exit_code: int = 0) -> None:
@@ -193,6 +201,129 @@ def handle_spotify_commands(args: argparse.Namespace) -> None:
         )
 
 
+def handle_browser_commands(args: argparse.Namespace) -> None:
+    """Handle 'browser' subcommands."""
+    sub = args.browser_subcommand
+    client = BrowserClient()
+
+    try:
+        if sub == "status":
+            res = client.status()
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "start":
+            res = client.start(headless=args.headless, open_url=args.url)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "stop":
+            res = client.stop()
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "tabs":
+            tabs = client.tabs()
+            output_result(
+                {
+                    "status": "success",
+                    "action": "list_tabs",
+                    "count": len(tabs),
+                    "tabs": tabs,
+                },
+                pretty=args.pretty,
+                exit_code=0,
+            )
+
+        elif sub == "open":
+            res = client.open_tab(url=args.url)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "close-tab":
+            res = client.close_tab(tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "activate-tab":
+            res = client.activate_tab(tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "navigate":
+            res = client.navigate(url=args.url, tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "reload":
+            res = client.reload(ignore_cache=args.ignore_cache, tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "back":
+            res = client.back(tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "forward":
+            res = client.forward(tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "inspect":
+            res = client.inspect(tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "screenshot":
+            res = client.screenshot(output_path=args.output, tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "click":
+            res = client.click(selector=args.selector, tab_id=args.tab, confirmed=args.confirmed)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "fill":
+            res = client.fill(selector=args.selector, value=args.value, tab_id=args.tab, confirmed=args.confirmed)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+        elif sub == "scroll":
+            res = client.scroll(direction=args.direction, amount=args.amount, tab_id=args.tab)
+            output_result(res, pretty=args.pretty, exit_code=0)
+
+    except ConfirmationRequiredError as conf_err:
+        output_result(
+            {
+                "status": "confirmation_required",
+                "code": "CONFIRMATION_REQUIRED",
+                "action": conf_err.action,
+                "target": conf_err.target,
+                "message": str(conf_err),
+                "prompt": f"Explicit confirmation required: {conf_err.reason}. Add '--confirmed' flag to proceed.",
+            },
+            pretty=args.pretty,
+            exit_code=2,
+        )
+
+    except (BrowserSecurityError, SecurityError) as sec_err:
+        output_result(
+            {
+                "status": "error",
+                "code": "SECURITY_VIOLATION",
+                "message": str(sec_err),
+            },
+            pretty=args.pretty,
+            exit_code=1,
+        )
+
+    except (
+        BrowserLifecycleError,
+        TabManagerError,
+        NavigationError,
+        PageInspectorError,
+        InteractionError,
+        CDPError,
+    ) as browser_err:
+        output_result(
+            {
+                "status": "error",
+                "code": type(browser_err).__name__,
+                "message": str(browser_err),
+            },
+            pretty=args.pretty,
+            exit_code=1,
+        )
+
+
 def main() -> None:
     """Main CLI entry point."""
     # Base parser for shared options like --pretty
@@ -205,7 +336,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="maverick-ctl",
-        description="Maverick DevOS Desktop Launcher & Spotify Controller",
+        description="Maverick DevOS Desktop Launcher, Spotify & Browser Controller",
         parents=[base_parser],
     )
 
@@ -256,12 +387,70 @@ def main() -> None:
     uri_parser = spotify_subs.add_parser("open-uri", help="Open Spotify URI or track URL", parents=[spotify_base])
     uri_parser.add_argument("uri", help="Spotify track/album/playlist URI")
 
+    # Base parser for browser options like --tab
+    browser_base = argparse.ArgumentParser(add_help=False, parents=[base_parser])
+    browser_base.add_argument(
+        "--tab",
+        default=None,
+        help="Target tab ID (defaults to first/active page tab)",
+    )
+
+    # 3. Browser command parser
+    browser_parser = subparsers.add_parser("browser", help="Control Chrome automation browser via CDP", parents=[browser_base])
+    browser_subs = browser_parser.add_subparsers(dest="browser_subcommand", required=True)
+
+    browser_subs.add_parser("status", help="Check browser automation and CDP status", parents=[browser_base])
+    
+    start_parser = browser_subs.add_parser("start", help="Launch isolated Chrome automation session", parents=[browser_base])
+    start_parser.add_argument("--headless", action="store_true", help="Launch in headless mode")
+    start_parser.add_argument("--url", default=None, help="Initial URL to open")
+
+    browser_subs.add_parser("stop", help="Gracefully stop Chrome automation session", parents=[browser_base])
+    browser_subs.add_parser("tabs", help="List open browser tabs", parents=[browser_base])
+
+    open_parser = browser_subs.add_parser("open", help="Open a new tab", parents=[browser_base])
+    open_parser.add_argument("url", nargs="?", default="about:blank", help="URL to open (defaults to about:blank)")
+
+    browser_subs.add_parser("close-tab", help="Close the target tab", parents=[browser_base])
+
+    act_parser = browser_subs.add_parser("activate-tab", help="Focus the target tab", parents=[browser_base])
+    act_parser.add_argument("tab_id", help="Tab ID to activate")
+
+    nav_parser = browser_subs.add_parser("navigate", help="Navigate target tab to a URL", parents=[browser_base])
+    nav_parser.add_argument("url", help="Target URL (http/https/about:blank)")
+
+    reload_parser = browser_subs.add_parser("reload", help="Reload the target tab", parents=[browser_base])
+    reload_parser.add_argument("--ignore-cache", action="store_true", help="Bypass browser cache")
+
+    browser_subs.add_parser("back", help="Navigate backward in history", parents=[browser_base])
+    browser_subs.add_parser("forward", help="Navigate forward in history", parents=[browser_base])
+
+    browser_subs.add_parser("inspect", help="Inspect visible text, title, and metadata", parents=[browser_base])
+
+    shot_parser = browser_subs.add_parser("screenshot", help="Capture tab screenshot", parents=[browser_base])
+    shot_parser.add_argument("--output", default=None, help="Destination PNG file path")
+
+    click_parser = browser_subs.add_parser("click", help="Click an element by CSS selector", parents=[browser_base])
+    click_parser.add_argument("selector", help="CSS selector of element to click")
+    click_parser.add_argument("--confirmed", action="store_true", help="Confirm consequential interactions")
+
+    fill_parser = browser_subs.add_parser("fill", help="Fill text into an element", parents=[browser_base])
+    fill_parser.add_argument("selector", help="CSS selector of input/textarea")
+    fill_parser.add_argument("value", help="Text to fill")
+    fill_parser.add_argument("--confirmed", action="store_true", help="Confirm consequential interactions")
+
+    scroll_parser = browser_subs.add_parser("scroll", help="Scroll page up, down, top, or bottom", parents=[browser_base])
+    scroll_parser.add_argument("--direction", default="down", choices=["up", "down", "top", "bottom"], help="Scroll direction")
+    scroll_parser.add_argument("--amount", type=int, default=500, help="Scroll pixels (default 500)")
+
     args = parser.parse_args()
 
     if args.command == "app":
         handle_app_commands(args)
     elif args.command == "spotify":
         handle_spotify_commands(args)
+    elif args.command == "browser":
+        handle_browser_commands(args)
 
 
 if __name__ == "__main__":
