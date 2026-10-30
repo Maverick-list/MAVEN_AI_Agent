@@ -321,6 +321,67 @@ class TestVoiceSubsystem(unittest.TestCase):
         self.assertEqual(res_down["status"], "success")
         self.assertIn("Volume Spotify diturunkan", res_down["response"])
 
+    # 18. Phase 5.3 Bilingual Intent Classifier & Prompt Verification
+    def test_bilingual_intent_classifier_phrases(self):
+        from maverick.voice.intent import BilingualIntentClassifier
+
+        # 12 Target Indonesian expressions from prompt
+        test_cases = [
+            ("Buka VS Code.", "app_launch", "code", True),
+            ("Tolong buka Visual Studio Code.", "app_launch", "code", True),
+            ("Aku mau coding.", "app_launch", "code", True),
+            ("Putar musik.", "spotify_play", None, True),
+            ("Naikkan volume.", "spotify_volume", "up", True),
+            ("Volume-nya 70 persen.", "spotify_volume", 70, True),
+            ("Berapa RAM tersisa?", "system_ram", None, True),
+            ("Cek baterai laptop.", "system_battery", None, True),
+            ("Bagaimana kondisi laptopku?", "context_summary", None, True),
+            ("Ringkasan desktop.", "context_summary", None, True),
+            ("Jeda musik.", "spotify_pause", None, True),
+            ("Matikan suara Maven.", "mute", None, True),
+        ]
+
+        for phrase, exp_intent, exp_target, exp_is_id in test_cases:
+            res = BilingualIntentClassifier.classify(phrase)
+            self.assertEqual(res["intent"], exp_intent, f"Failed intent for: {phrase}")
+            self.assertEqual(res["target"], exp_target, f"Failed target for: {phrase}")
+            self.assertEqual(res["is_id"], exp_is_id, f"Failed is_id for: {phrase}")
+
+        # English conversational queries fallback to unhandled
+        res_conv = BilingualIntentClassifier.classify("Tell me a funny joke about Linux")
+        self.assertEqual(res_conv["intent"], "unhandled")
+        self.assertFalse(res_conv["is_id"])
+
+        # Polite English commands
+        res_en = BilingualIntentClassifier.classify("Please open Visual Studio Code")
+        self.assertEqual(res_en["intent"], "app_launch")
+        self.assertEqual(res_en["target"], "code")
+        self.assertFalse(res_en["is_id"])
+
+    # 19. Phase 5.3 Two-Pass Wake-Word Verification Logic
+    def test_two_pass_wakeword_logic(self):
+        from maverick.voice.wakeword import LocalKeywordWakeWordDetector
+
+        detector = LocalKeywordWakeWordDetector(self.config)
+
+        # Direct verification tests
+        self.assertTrue(detector.verify_text_candidate("hey maven"))
+        self.assertTrue(detector.verify_text_candidate("halo maven"))
+        self.assertTrue(detector.verify_text_candidate("maven"))
+        self.assertTrue(detector.verify_text_candidate("hey jarvis"))
+
+        # Rejection of common distractor phonemes / near rhymes
+        self.assertFalse(detector.verify_text_candidate("haven", "haven"))
+        self.assertFalse(detector.verify_text_candidate("shaven", "shaven"))
+        self.assertFalse(detector.verify_text_candidate("motor", "motor"))
+        self.assertFalse(detector.verify_text_candidate("modern", "modern"))
+        self.assertFalse(detector.verify_text_candidate("bacon", "bacon"))
+        self.assertFalse(detector.verify_text_candidate("mayhem", "mayhem"))
+
+        # Mid-sentence occurrences must be rejected by prefix anchoring
+        self.assertFalse(detector.verify_text_candidate("i met maven at the conference"))
+        self.assertFalse(detector.verify_text_candidate("the haven for sailors"))
+
 
 if __name__ == "__main__":
     unittest.main()

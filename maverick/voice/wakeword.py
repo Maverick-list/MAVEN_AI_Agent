@@ -29,13 +29,45 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
     """
     True local keyword recognition engine.
     Combines stage-1 energy onset Voice Activity Detection (VAD) with dynamic
-    ambient noise floor tracking and stage-2 local acoustic keyword verification
+    ambient noise floor tracking and stage-2 two-pass acoustic keyword verification
     via whisper.cpp.
     Operates offline, recognizes 'Hey Maven' and 'Maven' (or 'Jarvis'), and
-    decisively rejects unrelated loud noises (claps, coughs, sneezes) and non-wake speech.
+    decisively rejects unrelated loud noises (claps, coughs, sneezes), near-homophones
+    (haven, mayhem, memory, modern), and non-wake speech.
     """
 
-    WAKE_REGEX = re.compile(r"\b(hey\s+)?(maven|jarvis|mavin|mayven|maveran|maveram)\b", re.IGNORECASE)
+    WAKE_REGEX = re.compile(
+        r"^\s*[\"'\.,\-\s]*(?:(?:hey|hei|halo|hai|ok|okay)\s+)?(?:maven|jarvis|mavin|mayven|meiven|maveran|maveram)\b",
+        re.IGNORECASE,
+    )
+    TWO_WORD_WAKE = re.compile(
+        r"^\s*[\"'\.,\-\s]*(?:hey|hei|halo|hai|ok|okay)\s+(?:maven|jarvis)\b",
+        re.IGNORECASE,
+    )
+    PROMPT_PASS1 = "Hey Maven, Jarvis, haven, mayhem, bacon, raven"
+    PROMPT_PASS2 = "memory, modern, method, motor, haven, morning, music, meeting, weather, question, report, project"
+    DISTRACTOR_REGEX = re.compile(
+        r"\b(memory|modern|method|motor|haven|shaven|mayhem|marvin|bacon|morning|music|meeting)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def verify_text_candidate(cls, t1: str, t2: Optional[str] = None) -> bool:
+        """
+        Evaluate candidate transcription strings against two-pass wake rules:
+        - Must start with wake word prefix (WAKE_REGEX).
+        - Mid-sentence matches are rejected.
+        - Two-word wake phrases (TWO_WORD_WAKE) pass directly.
+        - Single-word candidates are rejected if distractor pass (t2) indicates near-homophone.
+        """
+        if not t1 or not cls.WAKE_REGEX.search(t1):
+            return False
+        if cls.TWO_WORD_WAKE.search(t1):
+            return True
+        if t2 and cls.DISTRACTOR_REGEX.search(t2):
+            if not cls.WAKE_REGEX.search(t2):
+                return False
+        return True
 
     def __init__(
         self,
@@ -67,8 +99,8 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         Uses fast RMS energy gating with dynamic background floor adaptation to avoid
         running inference on silence or steady ambient hum, followed by acoustic
         keyword verification when speech energy rises over the ambient floor.
-        Includes adaptive backoff cooldown on consecutive non-wake bursts to prevent
-        CPU starvation during continuous background noise.
+        Includes adaptive backoff cooldown on consecutive non-wake bursts to protect
+        CPU during continuous background noise.
         """
         if not frame_bytes or len(frame_bytes) < 2:
             return False
@@ -103,7 +135,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         if (now - self._last_check_time) < required_cooldown:
             return False
 
-        # Stage 2: Acoustic keyword verification
+        # Stage 2: Two-pass acoustic keyword verification
         # Need at least ~0.3s of buffered audio (9,600 bytes) to support rapid/short wake utterances
         if len(self._ring_buffer) < 9600:
             return False
@@ -111,21 +143,39 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._last_check_time = now
         audio_snapshot = bytes(self._ring_buffer)
 
-        # Transcribe the rolling window with clean, unrepeated wake keyword hint
-        transcript = self.stt.transcribe(
+        # Pass 1: Sensitive candidate detection with contrastive proper-noun prompt
+        t1 = self.stt.transcribe(
             audio_snapshot,
             language="en",
-            prompt="Maven",
+            prompt=self.PROMPT_PASS1,
         )
 
-        if transcript and self.WAKE_REGEX.search(transcript):
+        if not t1 or not self.WAKE_REGEX.search(t1):
+            self._failed_checks += 1
+            return False
+
+        # If high-confidence two-word wake phrase ("Hey Maven", "Hey Jarvis") is detected at prefix:
+        if self.TWO_WORD_WAKE.search(t1):
             self._last_trigger_time = now
             self._ring_buffer.clear()
             self._failed_checks = 0
             return True
 
-        self._failed_checks += 1
-        return False
+        # Pass 2: Precision confirmation for single-word candidates against common phonetically overlapping words
+        t2 = self.stt.transcribe(
+            audio_snapshot,
+            language="en",
+            prompt=self.PROMPT_PASS2,
+        )
+
+        if not self.verify_text_candidate(t1, t2):
+            self._failed_checks += 1
+            return False
+
+        self._last_trigger_time = now
+        self._ring_buffer.clear()
+        self._failed_checks = 0
+        return True
 
 
 class EnergySpectralWakeWordDetector(WakeWordDetector):

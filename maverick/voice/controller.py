@@ -19,6 +19,7 @@ from maverick.system.monitor import (
     get_system_resources,
 )
 from maverick.voice.config import VoiceConfig
+from maverick.voice.intent import BilingualIntentClassifier
 from maverick.voice.session import VoiceSession, VoiceState
 from maverick.voice.stt import LocalIntentSTTProvider, STTProvider, WhisperCppSTTProvider
 from maverick.voice.tts import SpeechDispatcherTTS, TTSProvider
@@ -95,13 +96,66 @@ class VoiceController:
         }
 
     def _route_desktop_action(self, cmd: str, confirmed: bool = False) -> Optional[Dict[str, Any]]:
-        """Route speech command to Maverick's secure desktop automation subsystems."""
+        """Route speech command to Maverick's secure desktop automation subsystems using BilingualIntentClassifier."""
+        parsed = BilingualIntentClassifier.classify(cmd)
+        intent = parsed.get("intent")
+        target = parsed.get("target")
+        is_id = parsed.get("is_id", False)
 
-        # Determine language context for localized responses
-        is_id = any(w in cmd for w in ("buka", "putar", "jeda", "hentikan", "sisa", "baterai", "ringkasan", "matikan", "aktifkan", "senyapkan", "bisu", "lagu", "musik", "berikutnya", "aplikasi", "atur", "persen", "naikkan", "turunkan", "tambah", "kurang"))
+        if not intent or intent in ("empty", "unhandled"):
+            return None
 
-        # 1. Spotify / Media Controls
-        if re.search(r"\b(play|resume|putar|mainkan|lanjutkan)\b.*\b(music|spotify|song|musik|lagu)\b", cmd) or cmd in ("play", "resume", "putar musik", "mainkan musik", "lanjutkan musik"):
+        # 1. Session Mute / Unmute / Stop
+        if intent == "mute":
+            self.session.set_muted(True)
+            resp = "Mikrofon dimatikan." if is_id else "Microphone muted."
+            return {"status": "success", "action": "mute", "response": resp}
+
+        if intent == "unmute":
+            self.session.set_muted(False)
+            resp = "Mikrofon diaktifkan." if is_id else "Microphone unmuted."
+            return {"status": "success", "action": "unmute", "response": resp}
+
+        if intent == "interrupt":
+            self.session.interrupt()
+            return {"status": "success", "action": "interrupt", "response": ""}
+
+        # 2. Spotify Volume Controls
+        if intent == "spotify_volume":
+            try:
+                ctl = SpotifyController()
+                if target == "up":
+                    status = ctl.get_status()
+                    curr = status.get("volume", 0.5) if status.get("status") == "success" else 0.5
+                    new_vol = min(1.0, curr + 0.1)
+                    ctl.set_volume(new_vol)
+                    pct = int(round(new_vol * 100))
+                    resp = f"Volume Spotify dinaikkan ke {pct} persen." if is_id else f"Spotify volume increased to {pct} percent."
+                    return {"status": "success", "action": "spotify_volume", "response": resp}
+                elif target == "down":
+                    status = ctl.get_status()
+                    curr = status.get("volume", 0.5) if status.get("status") == "success" else 0.5
+                    new_vol = max(0.0, curr - 0.1)
+                    ctl.set_volume(new_vol)
+                    pct = int(round(new_vol * 100))
+                    resp = f"Volume Spotify diturunkan ke {pct} persen." if is_id else f"Spotify volume decreased to {pct} percent."
+                    return {"status": "success", "action": "spotify_volume", "response": resp}
+                elif isinstance(target, (int, float)):
+                    level_int = max(0, min(100, int(target)))
+                    ctl.set_volume(level_int)
+                    resp = f"Volume Spotify diatur ke {level_int} persen." if is_id else f"Spotify volume set to {level_int} percent."
+                    return {"status": "success", "action": "spotify_volume", "response": resp}
+                else:
+                    status = ctl.get_status()
+                    pct = status.get("volume_percent", 50)
+                    resp = f"Volume Spotify saat ini adalah {pct} persen." if is_id else f"Current Spotify volume is {pct} percent."
+                    return {"status": "success", "action": "spotify_volume", "response": resp}
+            except Exception as e:
+                resp = f"Gagal mengatur volume: {str(e)}" if is_id else f"Could not set volume: {str(e)}"
+                return {"status": "error", "response": resp}
+
+        # 3. Spotify Playback Controls
+        if intent == "spotify_play":
             try:
                 ctl = SpotifyController()
                 res = ctl.play()
@@ -113,7 +167,7 @@ class VoiceController:
             except Exception as e:
                 return {"status": "error", "response": f"Could not control music: {str(e)}"}
 
-        elif re.search(r"\b(pause|stop|jeda|hentikan)\b.*\b(music|spotify|playback|musik|lagu)\b", cmd) or cmd in ("pause music", "pause", "jeda musik", "hentikan musik"):
+        if intent == "spotify_pause":
             try:
                 ctl = SpotifyController()
                 res = ctl.pause()
@@ -125,7 +179,7 @@ class VoiceController:
             except Exception as e:
                 return {"status": "error", "response": f"Failed to pause music: {str(e)}"}
 
-        elif re.search(r"\b(next|berikutnya|selanjutnya)\b.*\b(track|song|lagu|trek)\b", cmd) or cmd in ("next song", "lagu berikutnya", "berikutnya"):
+        if intent == "spotify_next":
             try:
                 ctl = SpotifyController()
                 ctl.next()
@@ -135,7 +189,7 @@ class VoiceController:
                 resp = "Tidak dapat beralih trek." if is_id else "Could not skip track."
                 return {"status": "error", "response": resp}
 
-        elif re.search(r"\b(what is playing|now playing|what song|lagu apa|sedang memutar apa|apa yang diputar)\b", cmd):
+        if intent == "spotify_status":
             try:
                 ctl = SpotifyController()
                 status = ctl.get_status()
@@ -143,94 +197,50 @@ class VoiceController:
                     title = status.get("title", "Unknown track")
                     artist = status.get("artist", "Unknown artist")
                     resp = f"Sedang memutar {title} oleh {artist}." if is_id else f"Now playing {title} by {artist}."
-                    return {"status": "success", "response": resp}
+                    return {"status": "success", "action": "spotify_status", "response": resp}
                 resp = "Tidak ada musik yang sedang diputar di Spotify." if is_id else "No music is currently playing on Spotify."
                 return {"status": "info", "response": resp}
             except Exception:
                 resp = "Tidak dapat memeriksa status pemutar musik." if is_id else "Unable to query media player status."
                 return {"status": "error", "response": resp}
 
-        elif re.search(r"\b(volume|suara)\b", cmd):
+        # 4. Application Launching
+        if intent == "app_launch" and target:
+            app_id = target
             try:
-                ctl = SpotifyController()
-                # 1. Volume up / down
-                if any(w in cmd for w in ("up", "increase", "raise", "naik", "naikkan", "tambah", "perbesar")):
-                    status = ctl.get_status()
-                    curr = status.get("volume", 0.5) if status.get("status") == "success" else 0.5
-                    new_vol = min(1.0, curr + 0.1)
-                    res = ctl.set_volume(new_vol)
-                    pct = int(round(new_vol * 100))
-                    resp = f"Volume Spotify dinaikkan ke {pct} persen." if is_id else f"Spotify volume increased to {pct} percent."
-                    return {"status": "success", "action": "spotify_volume", "response": resp}
-                elif any(w in cmd for w in ("down", "decrease", "lower", "turun", "turunkan", "kurang", "perkecil")):
-                    status = ctl.get_status()
-                    curr = status.get("volume", 0.5) if status.get("status") == "success" else 0.5
-                    new_vol = max(0.0, curr - 0.1)
-                    res = ctl.set_volume(new_vol)
-                    pct = int(round(new_vol * 100))
-                    resp = f"Volume Spotify diturunkan ke {pct} persen." if is_id else f"Spotify volume decreased to {pct} percent."
-                    return {"status": "success", "action": "spotify_volume", "response": resp}
-                # 2. Explicit numeric level: e.g. "volume 70" or "volume to 80 percent"
-                num_match = re.search(r"\b(\d{1,3})\b", cmd)
-                if num_match:
-                    level_int = int(num_match.group(1))
-                    level_int = max(0, min(100, level_int))
-                    res = ctl.set_volume(level_int)
-                    resp = f"Volume Spotify diatur ke {level_int} persen." if is_id else f"Spotify volume set to {level_int} percent."
-                    return {"status": "success", "action": "spotify_volume", "response": resp}
-                # 3. Query current volume
-                status = ctl.get_status()
-                pct = status.get("volume_percent", 50)
-                resp = f"Volume Spotify saat ini adalah {pct} persen." if is_id else f"Current Spotify volume is {pct} percent."
-                return {"status": "success", "action": "spotify_volume", "response": resp}
-            except Exception as e:
-                resp = f"Gagal mengatur volume: {str(e)}" if is_id else f"Could not set volume: {str(e)}"
-                return {"status": "error", "response": resp}
-
-        # 2. Application Launching
-        app_map = {
-            "code": ["code", "visual studio code", "vs code", "visual studio"],
-            "google-chrome": ["chrome", "google chrome", "browser", "peramban"],
-            "firefox": ["firefox", "mozilla"],
-            "nautilus": ["files", "nautilus", "file manager", "berkas", "manajer berkas"],
-            "spotify": ["spotify", "spotify client"],
-            "gnome-terminal": ["terminal", "gnome terminal", "command line"],
-        }
-
-        for app_id, triggers in app_map.items():
-            if any(re.search(rf"\b(open|launch|start|buka|jalankan)\b.*\b{re.escape(t)}\b", cmd) for t in triggers):
-                try:
-                    res = launch_app(app_id, confirmed=confirmed)
-                    if res.get("status") == "success":
-                        name = res.get("display_name", app_id)
-                        if res.get("action") == "already_running":
-                            resp = f"{name} sudah berjalan." if is_id else f"{name} is already open."
-                            return {"status": "success", "response": resp}
-                        resp = f"Membuka {name}." if is_id else f"Opening {name}."
-                        return {"status": "success", "response": resp}
-                    elif res.get("status") == "confirmation_required":
-                        resp = f"Membuka {app_id} membutuhkan konfirmasi. Katakan 'konfirmasi' untuk melanjutkan." if is_id else f"Launching {app_id} requires confirmation. Say 'confirm' to proceed."
-                        return {
-                            "status": "confirmation_required",
-                            "response": resp,
-                        }
-                    resp = f"Gagal membuka {app_id}." if is_id else f"Failed to launch {app_id}."
-                    return {"status": "error", "response": resp}
-                except ConfirmationRequiredError:
-                    resp = f"Tindakan pada {app_id} memerlukan konfirmasi." if is_id else f"Action on {app_id} requires confirmation. Say 'confirm' to proceed."
+                res = launch_app(app_id, confirmed=confirmed)
+                if res.get("status") == "success":
+                    name = res.get("display_name", app_id)
+                    if res.get("action") == "already_running":
+                        resp = f"{name} sudah berjalan." if is_id else f"{name} is already open."
+                        return {"status": "success", "action": "app_launch", "response": resp}
+                    resp = f"Membuka {name}." if is_id else f"Opening {name}."
+                    return {"status": "success", "action": "app_launch", "response": resp}
+                elif res.get("status") == "confirmation_required":
+                    resp = f"Membuka {app_id} memerlukan konfirmasi. Katakan 'konfirmasi' untuk melanjutkan." if is_id else f"Launching {app_id} requires confirmation. Say 'confirm' to proceed."
                     return {
                         "status": "confirmation_required",
+                        "action": "app_launch",
                         "response": resp,
                     }
-                except Exception as e:
-                    return {"status": "error", "response": f"Error opening application: {str(e)}"}
+                resp = f"Gagal membuka {app_id}." if is_id else f"Failed to launch {app_id}."
+                return {"status": "error", "response": resp}
+            except ConfirmationRequiredError:
+                resp = f"Tindakan pada {app_id} memerlukan konfirmasi." if is_id else f"Action on {app_id} requires confirmation. Say 'confirm' to proceed."
+                return {
+                    "status": "confirmation_required",
+                    "action": "app_launch",
+                    "response": resp,
+                }
+            except Exception as e:
+                return {"status": "error", "response": f"Error opening application: {str(e)}"}
 
-        # 3. Application Awareness
-        if re.search(r"\b(running|active|aktif|berjalan)\b.*\b(apps|applications|aplikasi)\b", cmd) or "what applications are running" in cmd or "aplikasi yang sedang berjalan" in cmd:
+        # 5. Application Awareness
+        if intent == "apps_running":
             apps = get_running_authorized_apps()
             if not apps:
                 resp = "Tidak ada aplikasi resmi yang sedang berjalan." if is_id else "No authorized applications are currently running."
-                return {"status": "success", "response": resp}
+                return {"status": "success", "action": "apps_running", "response": resp}
             names = [a.get("display_name", a.get("app_id")) for a in apps]
             app_list_str = ", ".join(names)
             if is_id:
@@ -239,11 +249,12 @@ class VoiceController:
                 resp = f"You currently have {len(apps)} applications running: {app_list_str}."
             return {
                 "status": "success",
+                "action": "apps_running",
                 "response": resp,
             }
 
-        # 4. System Telemetry & Hardware Context
-        if "ram" in cmd or "memory" in cmd or "memori" in cmd:
+        # 6. System Telemetry & Hardware Context
+        if intent == "system_ram":
             mem = get_memory_usage()
             avail = mem.get("available_gb", 0.0)
             pct = mem.get("percent", 0.0)
@@ -253,10 +264,11 @@ class VoiceController:
                 resp = f"You have {avail} gigabytes of RAM available, with {pct} percent total usage."
             return {
                 "status": "success",
+                "action": "system_ram",
                 "response": resp,
             }
 
-        if "battery" in cmd or "charging" in cmd or "baterai" in cmd:
+        if intent == "system_battery":
             bat = get_battery_status()
             pct = bat.get("percent", 100)
             charging_en = "charging" if bat.get("is_charging") else "discharging"
@@ -267,10 +279,11 @@ class VoiceController:
                 resp = f"Battery is at {pct} percent and currently {charging_en}."
             return {
                 "status": "success",
+                "action": "system_battery",
                 "response": resp,
             }
 
-        if "cpu" in cmd or "processor" in cmd or "prosesor" in cmd:
+        if intent == "system_cpu":
             cpu = get_cpu_usage()
             pct = cpu.get("usage_percent", 0.0)
             cores = cpu.get("cores_logical", 1)
@@ -280,10 +293,11 @@ class VoiceController:
                 resp = f"CPU utilization is at {pct} percent across {cores} threads."
             return {
                 "status": "success",
+                "action": "system_cpu",
                 "response": resp,
             }
 
-        if re.search(r"\b(desktop context|summarize desktop|what is happening|ringkasan desktop|status desktop)\b", cmd):
+        if intent == "context_summary":
             ce = ContextEngine()
             ctx = ce.get_context()
             running_cnt = ctx.get("applications", {}).get("running_authorized_count", 0)
@@ -295,24 +309,9 @@ class VoiceController:
                 resp = f"Desktop summary: {running_cnt} applications active, CPU at {cpu_pct} percent, and memory at {mem_pct} percent."
             return {
                 "status": "success",
+                "action": "context_summary",
                 "response": resp,
             }
-
-        # 5. Audio Mute / Stop
-        if cmd in ("mute", "mute microphone", "mute mic", "bisu", "matikan mikrofon", "senyapkan mikrofon"):
-            self.session.set_muted(True)
-            resp = "Mikrofon dimatikan." if is_id else "Microphone muted."
-            return {"status": "success", "response": resp}
-
-        if cmd in ("unmute", "unmute microphone", "unmute mic", "aktifkan mikrofon", "bunyikan mikrofon"):
-            self.session.set_muted(False)
-            resp = "Mikrofon diaktifkan." if is_id else "Microphone unmuted."
-            return {"status": "success", "response": resp}
-
-        if cmd in ("stop", "cancel", "be quiet", "silence", "berhenti", "diam", "batalkan"):
-            self.session.interrupt()
-            return {"status": "success", "response": ""}
-            return {"status": "success", "response": ""}
 
         return None
 
