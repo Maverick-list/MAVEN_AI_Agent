@@ -553,6 +553,31 @@ def handle_profile_commands(args: argparse.Namespace) -> None:
         output_result(res, pretty=args.pretty, exit_code=0 if res.get("status") == "success" else 1)
 
 
+def handle_computer_commands(args: argparse.Namespace) -> None:
+    """Handle 'computer' / 'cu' subcommands for desktop computer use."""
+    from maverick.computer_use.agent import AutonomousComputerUseAgent
+    agent = AutonomousComputerUseAgent()
+    sub = getattr(args, "computer_subcommand", "status")
+
+    if sub == "observe":
+        obs = agent.observer.observe(query=getattr(args, "query", None))
+        output_result(obs.to_dict(), pretty=args.pretty, exit_code=0)
+    elif sub == "execute":
+        goal = args.goal
+        confirmed = getattr(args, "confirmed", False)
+        res = agent.execute_goal(goal, confirmed=confirmed)
+        output_result(res, pretty=args.pretty, exit_code=0 if res.get("status") == "success" else 1)
+    elif sub == "status":
+        telem = agent.get_telemetry()
+        output_result(telem, pretty=args.pretty, exit_code=0)
+    elif sub == "profiles":
+        profs = agent.registry.list_profiles()
+        output_result({"count": len(profs), "profiles": profs}, pretty=args.pretty, exit_code=0)
+    elif sub == "stop":
+        agent.emergency_stop()
+        output_result({"status": "success", "message": "Emergency Stop engaged"}, pretty=args.pretty, exit_code=0)
+
+
 def main() -> None:
     """Main CLI entry point."""
     base_parser = argparse.ArgumentParser(add_help=False)
@@ -725,10 +750,31 @@ def main() -> None:
         help="Localhost port override (if specified, connects to http://127.0.0.1:<port>)",
     )
 
+    # 12. Universal Computer Use parser
+    cu_parser = subparsers.add_parser(
+        "computer",
+        aliases=["cu"],
+        help="Universal Linux Computer Use agent and desktop automation",
+        parents=[base_parser],
+    )
+    cu_subs = cu_parser.add_subparsers(dest="computer_subcommand", required=True)
+    cu_obs = cu_subs.add_parser("observe", help="Inspect visible desktop elements and active window", parents=[base_parser])
+    cu_obs.add_argument("--query", "-q", default=None, help="Filter elements by query text")
+
+    cu_exec = cu_subs.add_parser("execute", help="Execute an autonomous computer-use goal", parents=[base_parser])
+    cu_exec.add_argument("goal", help="Natural language desktop goal to execute")
+    cu_exec.add_argument("--confirmed", action="store_true", help="Confirm sensitive actions")
+
+    cu_subs.add_parser("status", help="Get live Computer Use telemetry and stage", parents=[base_parser])
+    cu_subs.add_parser("profiles", help="List application compatibility profiles", parents=[base_parser])
+    cu_subs.add_parser("stop", help="Trigger immediate Emergency Stop on virtual input", parents=[base_parser])
+
     args = parser.parse_args()
 
     if args.command in ("app", "apps"):
         handle_app_commands(args)
+    elif args.command in ("computer", "cu"):
+        handle_computer_commands(args)
     elif args.command in ("desktop", "gui"):
         from maverick.desktop.app import run_desktop_app
         url = f"http://127.0.0.1:{args.port}" if args.port else args.url

@@ -272,6 +272,33 @@
         </div>
       </section>
 
+      <!-- Universal Computer Use Agent Panel -->
+      <section class="glass-card cu-card" id="card-computer-use">
+        <div class="card-header">
+          <div>
+            <h2 class="card-label">UNIVERSAL COMPUTER USE:</h2>
+            <p class="card-status-line" id="cu-active-app-line">ACTIVE: SCANNING DESKTOP...</p>
+          </div>
+          <span class="mini-badge" id="cu-stage-badge">IDLE</span>
+        </div>
+        <div class="cu-telemetry-row">
+          <div class="cu-stat"><span class="cu-stat-label">STAGE:</span> <span class="cu-stat-val" id="cu-stage-val">IDLE</span></div>
+          <div class="cu-stat"><span class="cu-stat-label">METHOD:</span> <span class="cu-stat-val" id="cu-method-val">AT-SPI2</span></div>
+          <div class="cu-stat"><span class="cu-stat-label">LAST ACTION:</span> <span class="cu-stat-val" id="cu-action-val">None</span></div>
+        </div>
+        <div class="cu-verification-bar" id="cu-verification-bar">
+          <span class="cu-verif-label">VERIFY:</span> <span class="cu-verif-text" id="cu-verif-text">Ready for instructions</span>
+        </div>
+        <div class="cu-timeline-stream" id="cu-timeline-stream">
+          <div class="cu-empty">No active computer-use workflow. Enter a task or command.</div>
+        </div>
+        <div class="cu-controls-bar">
+          <button type="button" class="ghost-chip" id="btn-cu-observe" title="Perform instant screen observation">👁 OBSERVE</button>
+          <button type="button" class="ghost-chip" id="btn-cu-pause" title="Pause or Resume Execution">⏸ PAUSE</button>
+          <button type="button" class="ghost-chip chip-danger" id="btn-cu-estop" title="Emergency Stop Virtual Input">🛑 STOP</button>
+        </div>
+      </section>
+
       <!-- 2. Current Activity & Security Gates -->
       <section class="glass-card" id="card-activity">
         <div class="card-header">

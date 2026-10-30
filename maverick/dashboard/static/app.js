@@ -372,6 +372,9 @@
     // 11. Multimodal Vision & Gesture Telemetry HUD
     renderVisionHud(snap);
 
+    // 12. Universal Computer Use Agent Panel
+    renderComputerUse(snap.computer_use);
+
     // Update live logs drawer if open
     const logsModal = document.getElementById("logs-modal");
     if (!logsModal.hidden) {
@@ -1080,6 +1083,87 @@
       showToast("Vision calibration reset to defaults");
     } catch (err) {
       showToast(`Calibration failed: ${err.message}`);
+    }
+  });
+
+  // --- Universal Computer Use Agent UI ---
+  function renderComputerUse(cu) {
+    const appLine = document.getElementById("cu-active-app-line");
+    const stageBadge = document.getElementById("cu-stage-badge");
+    const stageVal = document.getElementById("cu-stage-val");
+    const methodVal = document.getElementById("cu-method-val");
+    const actionVal = document.getElementById("cu-action-val");
+    const verifText = document.getElementById("cu-verif-text");
+    const timelineStream = document.getElementById("cu-timeline-stream");
+    if (!appLine || !stageBadge || !timelineStream) return;
+
+    if (!cu) {
+      appLine.textContent = "DESKTOP OBSERVATION READY";
+      stageBadge.textContent = "IDLE";
+      stageBadge.className = "mini-badge";
+      return;
+    }
+
+    const activeApp = cu.active_app || "None";
+    const activeWin = cu.active_window || "None";
+    appLine.textContent = `${activeApp.toUpperCase()} · ${activeWin.slice(0, 32)}`;
+
+    const currentTask = cu.current_task;
+    const stage = currentTask ? currentTask.stage : (cu.status || "idle");
+    stageBadge.textContent = stage.toUpperCase();
+    stageBadge.className = `mini-badge ${stage === "completed" ? "ok" : stage === "failed" ? "danger" : stage === "act" ? "warn" : ""}`;
+
+    if (stageVal) stageVal.textContent = stage.toUpperCase();
+    if (methodVal) methodVal.textContent = "AT-SPI2 / HYBRID";
+    if (actionVal) actionVal.textContent = currentTask?.last_action || cu.input_telemetry?.last_action || "None";
+    if (verifText) verifText.textContent = currentTask?.last_verification || "Ready for instructions";
+
+    if (currentTask && currentTask.timeline && currentTask.timeline.length > 0) {
+      timelineStream.innerHTML = "";
+      for (const ev of currentTask.timeline.slice(-6)) {
+        const item = document.createElement("div");
+        item.className = "cu-timeline-item";
+        item.innerHTML = `<span class="cu-timeline-stage">[${(ev.stage || "TASK").toUpperCase()}]</span> <span class="cu-timeline-event">${ev.event}</span>`;
+        timelineStream.appendChild(item);
+      }
+    } else {
+      timelineStream.innerHTML = '<div class="cu-empty">No active computer-use workflow. Enter a task or command.</div>';
+    }
+  }
+
+  document.getElementById("btn-cu-observe")?.addEventListener("click", async () => {
+    try {
+      showToast("Observing desktop state...");
+      const res = await apiPost("/api/computer-use/observation", {});
+      showToast(`Active Window: ${res.observation?.active_window?.name || "Desktop"}`);
+    } catch (err) {
+      showToast(`Observation failed: ${err.message}`);
+    }
+  });
+
+  document.getElementById("btn-cu-pause")?.addEventListener("click", async (e) => {
+    const isPaused = e.target.textContent.includes("RESUME");
+    try {
+      if (isPaused) {
+        await apiPost("/api/computer-use/resume", {});
+        e.target.textContent = "⏸ PAUSE";
+        showToast("Computer Use execution resumed.");
+      } else {
+        await apiPost("/api/computer-use/pause", {});
+        e.target.textContent = "▶ RESUME";
+        showToast("Computer Use execution paused.");
+      }
+    } catch (err) {
+      showToast(`Pause/Resume failed: ${err.message}`);
+    }
+  });
+
+  document.getElementById("btn-cu-estop")?.addEventListener("click", async () => {
+    try {
+      await apiPost("/api/computer-use/emergency-stop", {});
+      showToast("🛑 Computer Use Emergency Stop Engaged!");
+    } catch (err) {
+      showToast(`Emergency stop failed: ${err.message}`);
     }
   });
 

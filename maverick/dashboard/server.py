@@ -220,6 +220,8 @@ class TelemetryHub:
         self.planner = TaskPlanner(memory=self.memory)
         self.active_plan: Optional[TaskPlan] = None
         self.vision_controller: VisionController = self.controller.vision or VisionController()
+        from maverick.computer_use.agent import AutonomousComputerUseAgent
+        self.computer_use_agent = getattr(self.planner.tools, "_cu_agent", None) or AutonomousComputerUseAgent()
         self._daemon_last_trigger: str = "wake_word"
 
         self._lock = threading.Lock()
@@ -633,6 +635,7 @@ class TelemetryHub:
                 "recent_memories": self.memory.list_all(limit=6),
             },
             "vision": self.vision_controller.get_status(),
+            "computer_use": self.computer_use_agent.get_telemetry(),
             "conversations": self.conversations.list_recent(limit=30),
         }
 
@@ -1174,6 +1177,19 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(mp3_bytes)
             return
 
+        if route == "/api/computer-use/status":
+            self._send_json({"status": "success", "telemetry": self.hub.computer_use_agent.get_telemetry()})
+            return
+
+        if route == "/api/computer-use/observation":
+            obs = self.hub.computer_use_agent.observer.observe()
+            self._send_json({"status": "success", "observation": obs.to_dict()})
+            return
+
+        if route == "/api/computer-use/profiles":
+            self._send_json({"status": "success", "profiles": self.hub.computer_use_agent.registry.list_profiles()})
+            return
+
         if route == "/api/events":
             self._handle_sse()
             return
@@ -1323,6 +1339,28 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/vision/calibrate":
             res = self.hub.calibrate_vision(body)
             self._send_json(res)
+            return
+
+        if route == "/api/computer-use/execute":
+            goal = body.get("goal", "").strip()
+            confirmed = bool(body.get("confirmed", False))
+            res = self.hub.computer_use_agent.execute_goal(goal, confirmed=confirmed)
+            self._send_json(res)
+            return
+
+        if route == "/api/computer-use/pause":
+            self.hub.computer_use_agent.pause()
+            self._send_json({"status": "success", "action": "paused"})
+            return
+
+        if route == "/api/computer-use/resume":
+            self.hub.computer_use_agent.resume()
+            self._send_json({"status": "success", "action": "resumed"})
+            return
+
+        if route == "/api/computer-use/emergency-stop":
+            self.hub.computer_use_agent.emergency_stop()
+            self._send_json({"status": "success", "action": "emergency_stop_engaged"})
             return
 
         self._send_json({"status": "error", "message": f"Unknown endpoint: {route}"}, status=HTTPStatus.NOT_FOUND)

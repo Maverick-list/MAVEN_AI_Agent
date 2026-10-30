@@ -406,6 +406,107 @@ class ToolRegistry:
             handler=self._tool_interaction_mode_toggle,
         ))
 
+        # 19. Computer Observe Screen
+        self.register(ToolDefinition(
+            name="computer_observe_screen",
+            description="Observe active window, visible application hierarchies, interactive UI elements, and semantic OCR text map.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Optional search filter for UI elements"},
+                    "capture_visual": {"type": "boolean", "description": "Whether to render semantic wireframe"},
+                },
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_computer_observe_screen,
+        ))
+
+        # 20. Computer Find Elements
+        self.register(ToolDefinition(
+            name="computer_find_elements",
+            description="Locate interactive buttons, entries, menus, or tabs by name and role.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Target element label or text"},
+                    "role": {"type": "string", "description": "Optional role filter (button, entry, menu item)"},
+                },
+                "required": ["query"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_computer_find_elements,
+        ))
+
+        # 21. Computer Click Element
+        self.register(ToolDefinition(
+            name="computer_click_element",
+            description="Locate and click an interactive UI element using the optimal strategy tier (AT-SPI action -> coordinate click).",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "target_name": {"type": "string", "description": "Name or text of element to click"},
+                },
+                "required": ["target_name"],
+            },
+            risk=ToolRisk.CONSEQUENTIAL,
+            handler=self._tool_computer_click_element,
+        ))
+
+        # 22. Computer Type Text
+        self.register(ToolDefinition(
+            name="computer_type_text",
+            description="Type text string into active focus or specific target entry field.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text content to synthesize"},
+                    "target_field": {"type": "string", "description": "Optional name of target input field"},
+                },
+                "required": ["text"],
+            },
+            risk=ToolRisk.CONSEQUENTIAL,
+            handler=self._tool_computer_type_text,
+        ))
+
+        # 23. Computer Send Shortcut
+        self.register(ToolDefinition(
+            name="computer_send_shortcut",
+            description="Execute a keyboard combination shortcut (e.g. Ctrl+S, Ctrl+Shift+P, Return, Escape, Tab).",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "shortcut": {"type": "string", "description": "Shortcut combination string (e.g. 'Ctrl+s')"},
+                },
+                "required": ["shortcut"],
+            },
+            risk=ToolRisk.CONSEQUENTIAL,
+            handler=self._tool_computer_send_shortcut,
+        ))
+
+        # 24. Computer Execute Task
+        self.register(ToolDefinition(
+            name="computer_execute_task",
+            description="Execute multi-step autonomous computer-use workflow via closed-loop OBSERVE->UNDERSTAND->PLAN->ACT->VERIFY->RECOVER agent.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "High-level natural language goal for desktop automation"},
+                },
+                "required": ["goal"],
+            },
+            risk=ToolRisk.CONSEQUENTIAL,
+            handler=self._tool_computer_execute_task,
+        ))
+
+        # 25. Computer Emergency Stop
+        self.register(ToolDefinition(
+            name="computer_emergency_stop",
+            description="Immediately halt all ongoing computer-use automation, freeze pointer, and disarm virtual input.",
+            parameters_schema={"type": "object"},
+            risk=ToolRisk.CRITICAL,
+            handler=self._tool_computer_emergency_stop,
+        ))
+
     # --- Tool Handlers ---
 
     def _tool_desktop_launch_app(self, params: Dict[str, Any], confirmed: bool = False) -> Dict[str, Any]:
@@ -609,3 +710,72 @@ class ToolRegistry:
         from maverick.vision.vision_controller import VisionController
         vc = VisionController()
         return vc.mode_manager.toggle_mode()
+
+    def _get_computer_agent(self):
+        """Retrieve or lazily initialize the singleton Computer Use Agent."""
+        if not hasattr(self, "_cu_agent") or self._cu_agent is None:
+            from maverick.computer_use.agent import AutonomousComputerUseAgent
+            self._cu_agent = AutonomousComputerUseAgent()
+        return self._cu_agent
+
+    def _tool_computer_observe_screen(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        agent = self._get_computer_agent()
+        query = params.get("query")
+        cap = bool(params.get("capture_visual", False))
+        obs = agent.observer.observe(capture_visual=cap, query=query)
+        return obs.to_dict(include_visual=cap)
+
+    def _tool_computer_find_elements(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        agent = self._get_computer_agent()
+        query = params.get("query")
+        role = params.get("role")
+        elems = agent.bridge.find_elements(query=query, role=role, interactive_only=True)
+        return {"count": len(elems), "elements": [e.to_dict() for e in elems]}
+
+    def _tool_computer_click_element(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
+        from maverick.computer_use.strategy import StrategyTier
+        agent = self._get_computer_agent()
+        target = params.get("target_name", "")
+        res = agent.strategy.resolve_click(target)
+        if res.selected_tier == StrategyTier.TIER_5_COORDINATE_FALLBACK and res.confidence == 0.0:
+            return {"status": "error", "error": f"Target '{target}' not found on desktop."}
+
+        auth = agent.security.authorize_action("click", target_app=res.target_element.app_name if res.target_element else "", params=params, confirmed=confirmed)
+        if auth.get("needs_confirmation"):
+            return {"status": "confirmation_required", "tool_name": "computer_click_element", "message": auth.get("error")}
+
+        if res.method_name == "accessible_activate" and res.target_element:
+            ok = agent.bridge.activate_element(res.target_element)
+            return {"status": "success" if ok else "failed", "method": res.method_name, "target": target}
+        elif res.target_coordinates:
+            ok = agent.input.click_coordinate(*res.target_coordinates)
+            return {"status": "success" if ok else "failed", "method": "coordinate_click", "coords": res.target_coordinates}
+        return {"status": "error", "error": f"Click dispatch failed for '{target}'"}
+
+    def _tool_computer_type_text(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
+        agent = self._get_computer_agent()
+        text = params.get("text", "")
+        field_target = params.get("target_field")
+        res = agent.strategy.resolve_text_entry(text, target_field=field_target)
+        if res.method_name == "accessible_set_text" and res.target_element:
+            ok = agent.bridge.set_element_text(res.target_element, text)
+            return {"status": "success" if ok else "failed", "method": res.method_name}
+        ok = agent.input.type_text(text)
+        return {"status": "success" if ok else "failed", "method": "synthesized_typing", "length": len(text)}
+
+    def _tool_computer_send_shortcut(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        agent = self._get_computer_agent()
+        shortcut = params.get("shortcut", "")
+        ok = agent.input.send_shortcut(shortcut)
+        return {"status": "success" if ok else "failed", "shortcut": shortcut}
+
+    def _tool_computer_execute_task(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
+        agent = self._get_computer_agent()
+        goal = params.get("goal", "")
+        return agent.execute_goal(goal, confirmed=confirmed)
+
+    def _tool_computer_emergency_stop(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        agent = self._get_computer_agent()
+        agent.emergency_stop()
+        return {"status": "success", "message": "Universal Computer Use Emergency Stop engaged."}
+

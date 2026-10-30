@@ -248,7 +248,19 @@ class TaskPlanner:
                 dependencies=[],
             ))
 
-        # 4. Default / Single-step fallback
+        # 4. Universal Computer Use & Desktop Automation pattern
+        elif any(k in lower_goal for k in ("click ", "klik ", "press ", "type ", "ketik ", "shortcut", "observe screen", "lihat layar", "jelaskan layar", "what's on screen", "computer use", "control desktop")) or (
+            any(k in lower_goal for k in ("open ", "buka ")) and any(k in lower_goal for k in ("create", "write", "save", "folder", "project", "run", "file"))
+        ):
+            steps.append(TaskStep(
+                step_id=1,
+                description=f"Execute autonomous computer-use workflow for '{clean_goal[:50]}'",
+                tool_name="computer_execute_task",
+                parameters={"goal": clean_goal},
+                dependencies=[],
+            ))
+
+        # 5. Default / Single-step fallback
         else:
             steps.append(TaskStep(
                 step_id=1,
