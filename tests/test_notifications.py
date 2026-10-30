@@ -40,6 +40,33 @@ class TestNotificationFilter(unittest.TestCase):
         self.assertNotIn("abcd1234efgh5678ijkl9012", sanitized)
         self.assertIn("[REDACTED_TOKEN]", sanitized)
 
+    def test_sanitize_credit_cards(self):
+        text1 = "Card 4111-2222-3333-4444 charged"
+        text2 = "Card 4111222233334444 charged"
+        text3 = "Card 4111 2222 3333 4444 charged"
+        for t in (text1, text2, text3):
+            sanitized = sanitize_notification_text(t)
+            self.assertNotIn("4111", sanitized)
+            self.assertIn("[REDACTED_CARD]", sanitized)
+
+    def test_sanitize_bearer_and_jwt(self):
+        jwt_text = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        sanitized = sanitize_notification_text(jwt_text)
+        self.assertNotIn("eyJhbGciOi", sanitized)
+        self.assertIn("[REDACTED_TOKEN]", sanitized)
+
+    def test_sanitize_api_keys(self):
+        text = "Key sk-proj-1234567890abcdef1234567890 and ghp_123456789012345678901234567890123456"
+        sanitized = sanitize_notification_text(text)
+        self.assertNotIn("sk-proj-1234567890abcdef1234567890", sanitized)
+        self.assertNotIn("ghp_123456789012345678901234567890123456", sanitized)
+        self.assertIn("[REDACTED_API_KEY]", sanitized)
+
+    def test_sanitize_null_bytes(self):
+        text = "Hello\x00World\x00Notification"
+        sanitized = sanitize_notification_text(text)
+        self.assertEqual(sanitized, "HelloWorldNotification")
+
     def test_sanitize_non_string(self):
         self.assertEqual(sanitize_notification_text(None), "")
         self.assertEqual(sanitize_notification_text(12345), "")
@@ -89,8 +116,11 @@ class TestNotificationManager(unittest.TestCase):
         self.assertIn("[REDACTED_CODE]", record["body"])
         self.assertIn("[REDACTED_PASSWORD]", record["body"])
 
-        # Check file store was updated
+        # Check file store was updated and has restrictive 0o600 permissions
         self.assertTrue(os.path.exists(self.store_file))
+        import stat
+        st = os.stat(self.store_file)
+        self.assertEqual(stat.S_IMODE(st.st_mode), 0o600)
 
     def test_send_notification_disabled_category(self):
         self.mgr.enabled_categories = {"system"}  # 'social' disabled

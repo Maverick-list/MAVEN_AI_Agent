@@ -98,6 +98,48 @@ class TestActivityLogger(unittest.TestCase):
         self.assertEqual(recent[0]["action_type"], "action_9")
         self.assertEqual(recent[-1]["action_type"], "action_5")
 
+    def test_restrictive_file_permissions(self):
+        import stat
+        self.logger.log_action("test_action")
+        st = os.stat(self.log_file)
+        self.assertEqual(stat.S_IMODE(st.st_mode), 0o600)
+
+    def test_concurrent_writes(self):
+        import threading
+        def worker(w_id):
+            for i in range(10):
+                self.logger.log_action(f"action_{w_id}_{i}")
+
+        threads = [threading.Thread(target=worker, args=(w,)) for w in range(5)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        # Check all lines are valid JSON and retention (max 5) is maintained
+        with open(self.log_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        self.assertEqual(len(lines), 5)
+        for line in lines:
+            parsed = json.loads(line)
+            self.assertIn("action_type", parsed)
+
+    def test_malformed_json_resilience(self):
+        # Inject corrupted line
+        with open(self.log_file, "w", encoding="utf-8") as f:
+            f.write('{"action_type": "valid_1"}\n')
+            f.write('NOT_VALID_JSON_CORRUPTED\n')
+            f.write('{"action_type": "valid_2"}\n')
+
+        records = self.logger.get_recent_activity(limit=10)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["action_type"], "valid_2")
+        self.assertEqual(records[1]["action_type"], "valid_1")
+
+    def test_clear_unauthorized_path_blocked(self):
+        rogue_logger = ActivityLogger(log_path="/etc/passwd")
+        res = rogue_logger.clear()
+        self.assertEqual(res["status"], "error")
+        self.assertIn("Security restriction", res["message"])
+
     def test_clear_activity(self):
         self.logger.log_action("action_1")
         self.logger.log_action("action_2")

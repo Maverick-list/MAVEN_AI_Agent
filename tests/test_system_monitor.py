@@ -82,6 +82,37 @@ class TestSystemMonitor(unittest.TestCase):
         self.assertIn("interfaces", net)
         self.assertIsInstance(net["interfaces"], list)
 
+    def test_battery_missing_hardware(self):
+        """Test battery status fallback on desktop systems without battery hardware."""
+        with patch("glob.glob", return_value=[]):
+            with patch("maverick.system.monitor._HAS_PSUTIL", False):
+                bat = get_battery_status()
+                self.assertFalse(bat["has_battery"])
+                self.assertEqual(bat["percent"], 100)
+                self.assertTrue(bat["ac_connected"])
+
+    def test_network_unavailable(self):
+        """Test network status when all interfaces are down."""
+        with patch("glob.glob", return_value=[]):
+            net = get_network_status()
+            self.assertFalse(net["connected"])
+            self.assertEqual(net["interfaces"], [])
+
+    def test_cpu_getloadavg_error(self):
+        """Test CPU metrics fallback when os.getloadavg() raises OSError."""
+        with patch("os.getloadavg", side_effect=OSError("Loadavg unavailable")):
+            with patch("maverick.system.monitor._HAS_PSUTIL", False):
+                cpu = get_cpu_usage()
+                self.assertEqual(cpu["load_average"]["1m"], 0.0)
+                self.assertEqual(cpu["usage_percent"], 0.0)
+
+    def test_disk_usage_error(self):
+        """Test disk usage fallback when shutil.disk_usage raises OSError."""
+        with patch("shutil.disk_usage", side_effect=OSError("Disk query failed")):
+            disk = get_disk_usage()
+            self.assertEqual(disk["root"]["total_gb"], 0.0)
+            self.assertEqual(disk["home"]["total_gb"], 0.0)
+
     def test_system_summary_consolidation(self):
         """Test consolidated summary contains all telemetry domains."""
         summary = get_system_summary()

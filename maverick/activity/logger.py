@@ -1,5 +1,6 @@
 """Maverick DevOS - Privacy-Preserving Activity Logger."""
 
+import fcntl
 import json
 import os
 import re
@@ -64,14 +65,38 @@ class ActivityLogger:
         }
 
         try:
-            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
-            with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record) + "\n")
-            self._enforce_retention()
+            os.makedirs(os.path.dirname(self.log_path), mode=0o700, exist_ok=True)
+            fd = os.open(self.log_path, os.O_CREAT | os.O_RDWR | os.O_APPEND, 0o600)
+            with open(fd, "a+", encoding="utf-8") as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    f.write(json.dumps(record) + "\n")
+                    f.flush()
+                    self._enforce_retention_locked(f)
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            try:
+                os.chmod(self.log_path, 0o600)
+            except Exception:
+                pass
         except Exception:
             pass
 
         return record
+
+    def _enforce_retention_locked(self, f) -> None:
+        """Enforce retention policy while holding an exclusive lock."""
+        try:
+            f.seek(0)
+            lines = f.readlines()
+            if len(lines) > self.max_records:
+                trimmed = lines[-self.max_records:]
+                f.seek(0)
+                f.truncate(0)
+                f.writelines(trimmed)
+                f.flush()
+        except Exception:
+            pass
 
     def _enforce_retention(self) -> None:
         """Enforce retention policy to prevent unbounded disk growth."""
@@ -79,14 +104,13 @@ class ActivityLogger:
             return
 
         try:
-            with open(self.log_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            if len(lines) > self.max_records:
-                # Keep only the newest max_records
-                trimmed = lines[-self.max_records:]
-                with open(self.log_path, "w", encoding="utf-8") as f:
-                    f.writelines(trimmed)
+            fd = os.open(self.log_path, os.O_RDWR, 0o600)
+            with open(fd, "r+", encoding="utf-8") as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    self._enforce_retention_locked(f)
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
 
@@ -98,7 +122,14 @@ class ActivityLogger:
         records: List[Dict[str, Any]] = []
         try:
             with open(self.log_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                    lines = f.readlines()
+                finally:
+                    try:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
 
             for line in reversed(lines):
                 line = line.strip()
@@ -115,7 +146,18 @@ class ActivityLogger:
         return records
 
     def clear(self) -> Dict[str, Any]:
-        """Clear Maven's own activity log file."""
+        """Clear Maven's own activity log file safely."""
+        canonical = os.path.realpath(self.log_path)
+        allowed_dir = os.path.realpath(os.path.expanduser("~/.local/share/maverick"))
+
+        # Verify target is a designated log file or in allowed directory
+        if not (canonical.startswith(allowed_dir) or canonical.endswith(".jsonl")):
+            return {
+                "status": "error",
+                "action": "clear_activity",
+                "message": f"Security restriction: Refusing to delete unauthorized file '{self.log_path}'.",
+            }
+
         if os.path.isfile(self.log_path):
             try:
                 os.remove(self.log_path)

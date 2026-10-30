@@ -41,14 +41,19 @@ class NotificationManager:
             self.session_notifications = []
 
     def _save_store(self) -> None:
-        """Save session notifications to local file (max 50 recent items)."""
+        """Save session notifications to local file (max 50 recent items) with 0o600 permissions."""
         try:
-            os.makedirs(os.path.dirname(self.store_path), exist_ok=True)
-            with open(self.store_path, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(self.store_path), mode=0o700, exist_ok=True)
+            fd = os.open(self.store_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+            with open(fd, "w", encoding="utf-8") as f:
                 json.dump({
                     "notifications": self.session_notifications[-50:],
                     "enabled_categories": sorted(list(self.enabled_categories)),
                 }, f, indent=2)
+            try:
+                os.chmod(self.store_path, 0o600)
+            except Exception:
+                pass
         except Exception:
             pass
 

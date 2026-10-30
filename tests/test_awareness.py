@@ -47,6 +47,21 @@ class TestApplicationAwareness(unittest.TestCase):
         rss = _get_process_memory_mb(my_pid)
         self.assertGreater(rss, 0.0)
 
+    def test_process_disappearance_resilience(self):
+        """Test reading memory for non-existent PID handles disappearance gracefully."""
+        # Highly unlikely PID to exist
+        rss = _get_process_memory_mb(9999999)
+        self.assertEqual(rss, 0.0)
+
+    def test_context_resilience_when_subsystems_fail(self):
+        """Test get_active_application_context succeeds even if Spotify or Browser fail."""
+        with patch("maverick.desktop.awareness.SpotifyController", side_effect=Exception("D-Bus failure")):
+            with patch("maverick.desktop.awareness.BrowserLifecycle", side_effect=Exception("Browser failure")):
+                ctx = get_active_application_context()
+                self.assertIn("running_authorized_apps", ctx)
+                self.assertFalse(ctx["media"]["active"])
+                self.assertFalse(ctx["automation_browser"]["active"])
+
 
 if __name__ == "__main__":
     unittest.main()

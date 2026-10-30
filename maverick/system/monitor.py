@@ -28,7 +28,10 @@ def _bytes_to_mb(b: int) -> float:
 def get_cpu_usage() -> Dict[str, Any]:
     """Retrieve CPU utilization percentage, core count, and load averages."""
     core_count = os.cpu_count() or 1
-    load_1m, load_5m, load_15m = os.getloadavg()
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+    except (OSError, AttributeError):
+        load_1m, load_5m, load_15m = 0.0, 0.0, 0.0
 
     cpu_pct = 0.0
     if _HAS_PSUTIL:
@@ -104,9 +107,16 @@ def get_memory_usage() -> Dict[str, Any]:
 
 def get_disk_usage() -> Dict[str, Any]:
     """Retrieve disk utilization for root filesystem and user home directory."""
-    root_usage = shutil.disk_usage("/")
+    try:
+        root_usage = shutil.disk_usage("/")
+    except Exception:
+        root_usage = shutil._ntuple_diskusage(1, 0, 1)
+
     home_dir = os.path.expanduser("~")
-    home_usage = shutil.disk_usage(home_dir)
+    try:
+        home_usage = shutil.disk_usage(home_dir)
+    except Exception:
+        home_usage = shutil._ntuple_diskusage(1, 0, 1)
 
     root_total = _bytes_to_gb(root_usage.total)
     root_used = _bytes_to_gb(root_usage.used)
@@ -200,7 +210,7 @@ def get_battery_status() -> Dict[str, Any]:
         "percent": 100,
         "status": "AC_Connected",
         "is_charging": True,
-        "ac_connected": ac_online or True,
+        "ac_connected": ac_online if ac_online else True,
     }
 
 
