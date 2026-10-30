@@ -588,6 +588,108 @@ body[data-state="error"] .core-state-dot {
   letter-spacing: 0.06em;
 }
 
+/* PER-STAGE PIPELINE LATENCY HUD STRIP */
+.latency-hud {
+  margin-top: 6px;
+  width: min(98%, 590px);
+  padding: 9px 12px 8px;
+  border-radius: 10px;
+  background: rgba(6, 17, 36, 0.78);
+  border: 1px solid rgba(0, 240, 255, 0.24);
+  backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.14), 0 6px 22px rgba(0, 0, 0, 0.45);
+}
+
+.latency-hud-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.latency-hud-title {
+  font-family: var(--font-hud);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--cyan);
+}
+
+.latency-hud-route {
+  font-family: var(--font-mono);
+  font-size: 0.63rem;
+  color: var(--ice);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0, 240, 255, 0.09);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  max-width: 65%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.latency-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.lat-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 3px;
+  border-radius: 6px;
+  background: rgba(3, 10, 24, 0.68);
+  border: 1px solid rgba(125, 211, 252, 0.12);
+}
+
+.lat-cell-hero {
+  background: rgba(0, 240, 255, 0.12);
+  border-color: rgba(0, 240, 255, 0.48);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.16);
+}
+
+.lat-key {
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.lat-cell-hero .lat-key {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.lat-val {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #f8fafc;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+.lat-cell-hero .lat-val {
+  color: var(--emerald);
+}
+
+.latency-hud-foot {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* RIGHT PANEL: CONVERSATION STREAM */
 .chat-card {
   flex: 1 1 auto;
@@ -1061,5 +1163,8 @@ input[type="range"] {
   .form-grid,
   .sliders-grid {
     grid-template-columns: 1fr;
+  }
+  .latency-stage-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }

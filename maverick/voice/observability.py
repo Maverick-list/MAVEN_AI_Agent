@@ -1,11 +1,18 @@
 """Maverick DevOS - Structured Observability & Diagnostic Logging for Voice Subsystems."""
 
+from collections import deque
+import fcntl
+import json
 import os
 import re
 import sys
+import threading
 import time
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Deque, Dict, List, Optional
+
+STATE_DIR = os.path.expanduser("~/.local/state/maverick")
+LATENCY_TELEMETRY_FILE = os.path.join(STATE_DIR, "latency-telemetry.jsonl")
 
 # Masking patterns for sensitive authentication credentials and tokens
 SENSITIVE_PATTERNS = [
@@ -260,10 +267,182 @@ class VoiceLogger:
     def tts_interrupted(self) -> None:
         self._log("TTS", "WARNING", "TTS speech interrupted by user silence/stop request")
 
-    # 9. Exception Logging
+    # 9. Per-Stage Voice Pipeline Latency Telemetry
+    def pipeline_latency(self, metrics: Dict[str, Any]) -> None:
+        safe_kwargs: Dict[str, Any] = {}
+        for key in (
+            "route",
+            "model_used",
+            "stt_backend",
+            "wake_ms",
+            "stt_ms",
+            "network_dns_ms",
+            "network_tls_ms",
+            "gateway_queue_ms",
+            "llm_ttft_ms",
+            "llm_first_sentence_ms",
+            "llm_total_ms",
+            "llm_retries",
+            "tts_ttfb_ms",
+            "tts_playback_ms",
+            "tts_chunks",
+            "ttfa_ms",
+            "total_turn_ms",
+        ):
+            if key in metrics and metrics[key] is not None:
+                val = metrics[key]
+                safe_kwargs[key] = round(val, 1) if isinstance(val, float) else val
+        self._log("LATENCY", "INFO", "Voice turn latency breakdown", **safe_kwargs)
+        record_turn_latency(metrics)
+
+    # 10. Exception Logging
     def exception(self, context: str, exc: Exception) -> None:
         err_msg = f"Exception in {context}: {str(exc)}\n{traceback.format_exc()}"
         self._log("ERROR", "ERROR", err_msg)
+
+
+_LATENCY_LOCK = threading.Lock()
+_RECENT_LATENCY: Deque[Dict[str, Any]] = deque(maxlen=60)
+_LATENCY_FILE_SIG: Optional[tuple] = None
+
+
+def record_turn_latency(metrics: Dict[str, Any], path: str = LATENCY_TELEMETRY_FILE) -> Dict[str, Any]:
+    """Persist privacy-safe per-stage latency telemetry (chmod 0600) and update rolling memory buffer."""
+    global _LATENCY_FILE_SIG
+    now = time.time()
+    entry: Dict[str, Any] = {
+        "timestamp": time.strftime("%H:%M:%S"),
+        "iso_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "epoch": round(now, 3),
+        "route": str(metrics.get("route") or "unknown"),
+        "lang": str(metrics.get("lang") or "en"),
+        "model_used": redact_sensitive_text(str(metrics.get("model_used") or "local")),
+        "stt_backend": str(metrics.get("stt_backend") or "none"),
+        "tts_engine": str(metrics.get("tts_engine") or "none"),
+        "tts_chunks": int(metrics.get("tts_chunks") or 0),
+        "llm_retries": int(metrics.get("llm_retries") or 0),
+    }
+    for num_key in (
+        "wake_ms",
+        "stt_ms",
+        "network_dns_ms",
+        "network_tcp_ms",
+        "network_tls_ms",
+        "gateway_queue_ms",
+        "llm_ttft_ms",
+        "llm_first_sentence_ms",
+        "llm_total_ms",
+        "tts_ttfb_ms",
+        "tts_playback_ms",
+        "ttfa_ms",
+        "total_turn_ms",
+    ):
+        val = metrics.get(num_key)
+        entry[num_key] = round(float(val), 1) if isinstance(val, (int, float)) else None
+
+    with _LATENCY_LOCK:
+        if path == LATENCY_TELEMETRY_FILE:
+            _RECENT_LATENCY.append(entry)
+        try:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+            with open(fd, "a", encoding="utf-8") as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    f.write(json.dumps(entry) + "\n")
+                    f.flush()
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            os.chmod(path, 0o600)
+            if path == LATENCY_TELEMETRY_FILE:
+                st = os.stat(path)
+                _LATENCY_FILE_SIG = (st.st_ino, st.st_size, st.st_mtime_ns)
+        except Exception:
+            pass
+    return entry
+
+
+def load_recent_latency(limit: int = 25, path: str = LATENCY_TELEMETRY_FILE) -> List[Dict[str, Any]]:
+    """Load recent per-turn latency records with cross-process live sync from latency-telemetry.jsonl."""
+    global _LATENCY_FILE_SIG
+    is_default = path == LATENCY_TELEMETRY_FILE
+    if not os.path.isfile(path):
+        if is_default:
+            with _LATENCY_LOCK:
+                return list(_RECENT_LATENCY)[-limit:]
+        return []
+
+    try:
+        st = os.stat(path)
+        sig = (st.st_ino, st.st_size, st.st_mtime_ns)
+    except Exception:
+        if is_default:
+            with _LATENCY_LOCK:
+                return list(_RECENT_LATENCY)[-limit:]
+        return []
+
+    if is_default:
+        with _LATENCY_LOCK:
+            if _LATENCY_FILE_SIG == sig and _RECENT_LATENCY:
+                return list(_RECENT_LATENCY)[-limit:]
+
+    loaded: Deque[Dict[str, Any]] = deque(maxlen=max(60, limit))
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                    if isinstance(obj, dict):
+                        loaded.append(obj)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    with _LATENCY_LOCK:
+        if path == LATENCY_TELEMETRY_FILE:
+            _RECENT_LATENCY.clear()
+            _RECENT_LATENCY.extend(loaded)
+            _LATENCY_FILE_SIG = sig
+            return list(_RECENT_LATENCY)[-limit:]
+        return list(loaded)[-limit:]
+
+
+def get_latency_summary(limit: int = 25, path: str = LATENCY_TELEMETRY_FILE) -> Dict[str, Any]:
+    """Compute latest turn + rolling averages across each voice pipeline stage."""
+    items = load_recent_latency(limit=limit, path=path)
+    latest = items[-1] if items else None
+
+    def _avg(field: str, subset: Optional[List[Dict[str, Any]]] = None) -> Optional[float]:
+        pool = subset if subset is not None else items
+        vals = [float(x[field]) for x in pool if isinstance(x.get(field), (int, float)) and float(x[field]) >= 0.0]
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    ai_items = [x for x in items if str(x.get("route", "")).startswith("openclaw")]
+    return {
+        "turn_count": len(items),
+        "ai_turn_count": len(ai_items),
+        "latest": latest,
+        "averages_ms": {
+            "wake_ms": _avg("wake_ms"),
+            "stt_ms": _avg("stt_ms"),
+            "network_dns_ms": _avg("network_dns_ms"),
+            "network_tls_ms": _avg("network_tls_ms"),
+            "gateway_queue_ms": _avg("gateway_queue_ms", ai_items),
+            "llm_ttft_ms": _avg("llm_ttft_ms", ai_items),
+            "llm_first_sentence_ms": _avg("llm_first_sentence_ms", ai_items),
+            "llm_total_ms": _avg("llm_total_ms", ai_items),
+            "tts_ttfb_ms": _avg("tts_ttfb_ms"),
+            "tts_playback_ms": _avg("tts_playback_ms"),
+            "ttfa_ms": _avg("ttfa_ms"),
+            "ai_ttfa_ms": _avg("ttfa_ms", ai_items),
+            "total_turn_ms": _avg("total_turn_ms"),
+        },
+        "recent": items[-12:],
+    }
 
 
 # Global default logger singleton

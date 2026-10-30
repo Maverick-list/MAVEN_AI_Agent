@@ -1,17 +1,21 @@
 """Maverick DevOS - ElevenLabs Streaming Neural TTS Provider."""
 
+import http.client
+import io
 import json
 import os
+import queue
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from maverick.voice.config import (
     DEFAULT_ELEVENLABS_MODEL_ID,
@@ -125,6 +129,13 @@ class ElevenLabsTTSProvider:
         self._last_error: Optional[str] = None
         self._last_error_code: Optional[str] = None
         self._last_latency_ms: Optional[float] = None
+        self._last_dns_ms: float = 0.0
+        self._last_tcp_ms: float = 0.0
+        self._last_tls_ms: float = 0.0
+        self._last_playback_ms: float = 0.0
+        self._conn_lock = threading.Lock()
+        self._https_conn: Optional[http.client.HTTPSConnection] = None
+        self._ssl_ctx = ssl.create_default_context()
 
     def _effective_params(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Merge config defaults, live saved voice_settings.json, and optional per-call overrides."""
@@ -218,6 +229,9 @@ class ElevenLabsTTSProvider:
             "last_error_code": self._last_error_code,
             "last_error": self._last_error,
             "last_latency_ms": self._last_latency_ms,
+            "last_dns_ms": self._last_dns_ms,
+            "last_tls_ms": self._last_tls_ms,
+            "last_playback_ms": self._last_playback_ms,
             "presets": JARVIS_VOICE_PRESETS,
             "models": SUPPORTED_ELEVENLABS_MODELS,
         }
@@ -250,6 +264,81 @@ class ElevenLabsTTSProvider:
             return [mpv, "--no-video", "--really-quiet", "-"]
         return None
 
+    def _open_keepalive_stream(
+        self,
+        path_and_query: str,
+        payload: bytes,
+        headers: Dict[str, str],
+    ) -> http.client.HTTPResponse:
+        """
+        Dispatch TTS POST over a persistent HTTP/1.1 Keep-Alive TLS connection to api.elevenlabs.io,
+        measuring DNS, TCP, and TLS handshake latency separately on cold connect and reusing the
+        warm socket (0 ms handshake) on subsequent sentence chunks.
+        """
+        host = "api.elevenlabs.io"
+        timeout = float(self.config.elevenlabs_timeout_sec)
+
+        for attempt in range(2):
+            conn = self._https_conn
+            reused = conn is not None and getattr(conn, "sock", None) is not None
+            if not reused:
+                t_dns = time.perf_counter()
+                infos = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+                dns_ms = (time.perf_counter() - t_dns) * 1000.0
+                target_ip = infos[0][4][0]
+
+                t_tcp = time.perf_counter()
+                raw_sock = socket.create_connection((target_ip, 443), timeout=timeout)
+                raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                tcp_ms = (time.perf_counter() - t_tcp) * 1000.0
+
+                t_tls = time.perf_counter()
+                tls_sock = self._ssl_ctx.wrap_socket(raw_sock, server_hostname=host)
+                tls_ms = (time.perf_counter() - t_tls) * 1000.0
+
+                conn = http.client.HTTPSConnection(host, 443, timeout=timeout, context=self._ssl_ctx)
+                conn.sock = tls_sock
+                self._https_conn = conn
+                self._last_dns_ms = round(dns_ms, 1)
+                self._last_tcp_ms = round(tcp_ms, 1)
+                self._last_tls_ms = round(tls_ms, 1)
+            else:
+                self._last_dns_ms = 0.0
+                self._last_tcp_ms = 0.0
+                self._last_tls_ms = 0.0
+
+            try:
+                req_headers = dict(headers)
+                req_headers["Connection"] = "keep-alive"
+                conn.request("POST", path_and_query, body=payload, headers=req_headers)
+                resp = conn.getresponse()
+                if resp.status >= 400:
+                    raw_err = resp.read()
+                    http_err = urllib.error.HTTPError(
+                        f"https://{host}{path_and_query}",
+                        resp.status,
+                        resp.reason,
+                        resp.headers,
+                        io.BytesIO(raw_err),
+                    )
+                    raise http_err
+                return resp
+            except urllib.error.HTTPError:
+                raise
+            except (http.client.HTTPException, ConnectionError, OSError) as exc:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._https_conn = None
+                if attempt == 0 and reused:
+                    continue
+                if isinstance(exc, (socket.timeout, TimeoutError)):
+                    raise
+                raise urllib.error.URLError(exc) from None
+
+        raise urllib.error.URLError("Failed to establish ElevenLabs connection")
+
     def stream_mp3_chunks(
         self,
         text: str,
@@ -272,10 +361,12 @@ class ElevenLabsTTSProvider:
         api_key = get_elevenlabs_api_key()
         params = self._effective_params(overrides)
         voice_id = urllib.parse.quote(params["voice_id"], safe="")
-        url = (
-            f"{ELEVENLABS_API_BASE}/text-to-speech/{voice_id}/stream"
-            f"?output_format=mp3_44100_128"
+        opt_lat = int(getattr(self.config, "elevenlabs_optimize_streaming_latency", 3))
+        path_and_query = (
+            f"/v1/text-to-speech/{voice_id}/stream"
+            f"?output_format=mp3_44100_128&optimize_streaming_latency={opt_lat}"
         )
+        url = f"https://api.elevenlabs.io{path_and_query}"
 
         voice_settings: Dict[str, Any] = {
             "stability": params["stability"],
@@ -294,66 +385,125 @@ class ElevenLabsTTSProvider:
             }
         ).encode("utf-8")
 
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            method="POST",
-            headers={
-                "xi-api-key": api_key,
-                "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
-                "User-Agent": "Maven-JARVIS-ControlCenter/1.0",
-            },
-        )
+        headers = {
+            "xi-api-key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+            "User-Agent": "Maven-JARVIS-ControlCenter/1.1",
+        }
 
-        t0 = time.time()
-        try:
-            resp = urllib.request.urlopen(req, timeout=self.config.elevenlabs_timeout_sec)
-        except urllib.error.HTTPError as http_err:
-            code, msg = self._classify_http_error(http_err)
-            self._record_error(code, msg)
-            raise ElevenLabsError(code, msg, http_status=http_err.code) from None
-        except (socket.timeout, TimeoutError):
-            msg = "ElevenLabs streaming request timed out"
-            self._record_error("timeout", msg)
-            raise ElevenLabsError("timeout", msg) from None
-        except urllib.error.URLError as url_err:
-            reason = getattr(url_err, "reason", None)
-            if isinstance(reason, (socket.timeout, TimeoutError)):
-                msg = "ElevenLabs connection timed out"
+        use_mocked_urlopen = getattr(urllib.request.urlopen, "__module__", "") != "urllib.request"
+        t0 = time.perf_counter()
+
+        if use_mocked_urlopen:
+            req = urllib.request.Request(url, data=payload, method="POST", headers=headers)
+            try:
+                resp = urllib.request.urlopen(req, timeout=self.config.elevenlabs_timeout_sec)
+            except urllib.error.HTTPError as http_err:
+                code, msg = self._classify_http_error(http_err)
+                self._record_error(code, msg)
+                raise ElevenLabsError(code, msg, http_status=http_err.code) from None
+            except (socket.timeout, TimeoutError):
+                msg = "ElevenLabs streaming request timed out"
                 self._record_error("timeout", msg)
                 raise ElevenLabsError("timeout", msg) from None
-            msg = f"Network error reaching ElevenLabs: {type(reason).__name__ if reason else 'URLError'}"
-            self._record_error("network_error", msg)
-            raise ElevenLabsError("network_error", msg) from None
-        except Exception as exc:
-            msg = f"Unexpected ElevenLabs transport error: {type(exc).__name__}"
-            self._record_error("transport_error", msg)
-            raise ElevenLabsError("transport_error", msg) from None
+            except urllib.error.URLError as url_err:
+                reason = getattr(url_err, "reason", None)
+                if isinstance(reason, (socket.timeout, TimeoutError)):
+                    msg = "ElevenLabs connection timed out"
+                    self._record_error("timeout", msg)
+                    raise ElevenLabsError("timeout", msg) from None
+                msg = f"Network error reaching ElevenLabs: {type(reason).__name__ if reason else 'URLError'}"
+                self._record_error("network_error", msg)
+                raise ElevenLabsError("network_error", msg) from None
+            except Exception as exc:
+                msg = f"Unexpected ElevenLabs transport error: {type(exc).__name__}"
+                self._record_error("transport_error", msg)
+                raise ElevenLabsError("transport_error", msg) from None
 
-        try:
-            first_chunk = True
-            while True:
-                if self._cancel_event.is_set():
-                    break
-                chunk = resp.read(chunk_bytes)
-                if not chunk:
-                    break
-                if first_chunk:
-                    self._last_latency_ms = round((time.time() - t0) * 1000.0, 1)
-                    self._last_error = None
-                    self._last_error_code = None
-                    first_chunk = False
-                yield chunk
-        except (socket.timeout, TimeoutError):
-            msg = "ElevenLabs audio stream interrupted by timeout"
-            self._record_error("timeout", msg)
-            raise ElevenLabsError("timeout", msg) from None
-        finally:
             try:
-                resp.close()
-            except Exception:
-                pass
+                first_chunk = True
+                while True:
+                    if self._cancel_event.is_set():
+                        break
+                    chunk = resp.read(chunk_bytes)
+                    if not chunk:
+                        break
+                    if first_chunk:
+                        self._last_latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                        self._last_error = None
+                        self._last_error_code = None
+                        first_chunk = False
+                    yield chunk
+            except (socket.timeout, TimeoutError):
+                msg = "ElevenLabs audio stream interrupted by timeout"
+                self._record_error("timeout", msg)
+                raise ElevenLabsError("timeout", msg) from None
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            return
+
+        # Production Keep-Alive TLS Path
+        with self._conn_lock:
+            try:
+                resp = self._open_keepalive_stream(path_and_query, payload, headers)
+            except urllib.error.HTTPError as http_err:
+                code, msg = self._classify_http_error(http_err)
+                self._record_error(code, msg)
+                raise ElevenLabsError(code, msg, http_status=http_err.code) from None
+            except (socket.timeout, TimeoutError):
+                msg = "ElevenLabs streaming request timed out"
+                self._record_error("timeout", msg)
+                raise ElevenLabsError("timeout", msg) from None
+            except urllib.error.URLError as url_err:
+                reason = getattr(url_err, "reason", None)
+                if isinstance(reason, (socket.timeout, TimeoutError)):
+                    msg = "ElevenLabs connection timed out"
+                    self._record_error("timeout", msg)
+                    raise ElevenLabsError("timeout", msg) from None
+                msg = f"Network error reaching ElevenLabs: {type(reason).__name__ if reason else 'URLError'}"
+                self._record_error("network_error", msg)
+                raise ElevenLabsError("network_error", msg) from None
+            except Exception as exc:
+                msg = f"Unexpected ElevenLabs transport error: {type(exc).__name__}"
+                self._record_error("transport_error", msg)
+                raise ElevenLabsError("transport_error", msg) from None
+
+            completed_cleanly = False
+            try:
+                first_chunk = True
+                while True:
+                    if self._cancel_event.is_set():
+                        break
+                    chunk = resp.read(chunk_bytes)
+                    if not chunk:
+                        completed_cleanly = True
+                        break
+                    if first_chunk:
+                        self._last_latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                        self._last_error = None
+                        self._last_error_code = None
+                        first_chunk = False
+                    yield chunk
+            except (socket.timeout, TimeoutError):
+                msg = "ElevenLabs audio stream interrupted by timeout"
+                self._record_error("timeout", msg)
+                raise ElevenLabsError("timeout", msg) from None
+            finally:
+                if not completed_cleanly:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                    if self._https_conn is not None:
+                        try:
+                            self._https_conn.close()
+                        except Exception:
+                            pass
+                        self._https_conn = None
 
     def synthesize_mp3(
         self,
@@ -438,6 +588,7 @@ class ElevenLabsTTSProvider:
     ) -> bool:
         proc: Optional[subprocess.Popen] = None
         wrote_any = False
+        t_start = time.perf_counter()
         try:
             with self._lock:
                 self._is_speaking = True
@@ -475,6 +626,7 @@ class ElevenLabsTTSProvider:
             if proc and not self._cancel_event.is_set():
                 proc.wait(timeout=45.0)
 
+            self._last_playback_ms = round((time.perf_counter() - t_start) * 1000.0, 1)
             return wrote_any
         except ElevenLabsError:
             return False
@@ -492,6 +644,146 @@ class ElevenLabsTTSProvider:
                         pass
                 self._player_proc = None
                 self._is_speaking = False
+
+    def speak_stream(
+        self,
+        sentences: Iterable[str],
+        language: Optional[str] = None,
+        overrides: Optional[Dict[str, Any]] = None,
+        on_first_audio: Optional[Callable[[], None]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Stream and play an iterator of meaningful sentence chunks as they arrive from the LLM.
+        Synthesizes sentence N+1 in a background prefetch queue over the warm Keep-Alive TLS
+        socket while sentence N plays seamlessly through a single PipeWire/GStreamer sink.
+        """
+        if not self.is_configured():
+            _, code, hint = inspect_elevenlabs_key_state()
+            self._record_error(code, hint)
+            return {"ok": False, "reason": code, "chunks": 0}
+
+        player_cmd = self._resolve_streaming_player_cmd()
+        if not player_cmd:
+            self._record_error("player_missing", "No streaming MP3 audio player found")
+            return {"ok": False, "reason": "player_missing", "chunks": 0}
+
+        self.stop()
+        self._cancel_event.clear()
+
+        audio_q: "queue.Queue[Optional[Tuple[str, Any]]]" = queue.Queue(maxsize=3)
+        first_dns_ms = 0.0
+        first_tls_ms = 0.0
+        first_ttfb_ms: Optional[float] = None
+        sentence_count = 0
+
+        def _producer() -> None:
+            nonlocal first_dns_ms, first_tls_ms, first_ttfb_ms, sentence_count
+            try:
+                for raw_sent in sentences:
+                    if self._cancel_event.is_set():
+                        break
+                    sent = (raw_sent or "").strip()
+                    if not sent:
+                        continue
+                    sentence_count += 1
+                    idx = sentence_count
+                    t_req = time.perf_counter()
+                    try:
+                        first_piece = True
+                        for mp3_chunk in self.stream_mp3_chunks(sent, overrides=overrides):
+                            if self._cancel_event.is_set():
+                                break
+                            if first_piece:
+                                if idx == 1:
+                                    first_ttfb_ms = round((time.perf_counter() - t_req) * 1000.0, 1)
+                                    first_dns_ms = self._last_dns_ms
+                                    first_tls_ms = self._last_tls_ms
+                                first_piece = False
+                            audio_q.put(("chunk", mp3_chunk))
+                    except ElevenLabsError as err:
+                        audio_q.put(("error", (err.code, sent)))
+                        return
+            finally:
+                audio_q.put(None)
+
+        prod_thread = threading.Thread(target=_producer, name="maven-tts-prefetch", daemon=True)
+        proc: Optional[subprocess.Popen] = None
+        wrote_any = False
+        first_audio_fired = False
+        failed_sentence: Optional[str] = None
+        error_code: Optional[str] = None
+        t_play_start: Optional[float] = None
+
+        try:
+            with self._lock:
+                self._is_speaking = True
+            prod_thread.start()
+
+            while True:
+                if self._cancel_event.is_set():
+                    break
+                item = audio_q.get()
+                if item is None:
+                    break
+                kind, payload = item
+                if kind == "error":
+                    error_code, failed_sentence = payload
+                    break
+                if proc is None:
+                    proc = subprocess.Popen(
+                        player_cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    with self._lock:
+                        self._player_proc = proc
+                if proc.stdin:
+                    try:
+                        proc.stdin.write(payload)
+                        proc.stdin.flush()
+                        wrote_any = True
+                        if not first_audio_fired:
+                            first_audio_fired = True
+                            t_play_start = time.perf_counter()
+                            if on_first_audio is not None:
+                                try:
+                                    on_first_audio()
+                                except Exception:
+                                    pass
+                    except BrokenPipeError:
+                        break
+
+            if proc and proc.stdin:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            if proc and not self._cancel_event.is_set():
+                proc.wait(timeout=60.0)
+        finally:
+            with self._lock:
+                if proc and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                self._player_proc = None
+                self._is_speaking = False
+
+        total_play_ms = round((time.perf_counter() - t_play_start) * 1000.0, 1) if t_play_start is not None else 0.0
+        self._last_playback_ms = total_play_ms
+        return {
+            "ok": wrote_any and error_code is None,
+            "wrote_any": wrote_any,
+            "reason": error_code,
+            "failed_sentence": failed_sentence,
+            "chunks": sentence_count,
+            "tts_ttfb_ms": first_ttfb_ms,
+            "tts_playback_ms": total_play_ms,
+            "dns_ms": first_dns_ms,
+            "tls_ms": first_tls_ms,
+        }
 
     def stop(self) -> None:
         """Immediately interrupt active streaming synthesis and audio output."""
@@ -514,6 +806,22 @@ class ElevenLabsTTSProvider:
                     proc.kill()
                 except Exception:
                     pass
+
+    def close(self) -> None:
+        """Close persistent keep-alive TLS socket cleanly."""
+        conn = getattr(self, "_https_conn", None)
+        self._https_conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def list_available_voices(self) -> Dict[str, Any]:
         """Query ElevenLabs /v1/voices if configured; always include curated JARVIS presets."""

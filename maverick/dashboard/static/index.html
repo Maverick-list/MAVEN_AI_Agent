@@ -136,6 +136,51 @@
         <div class="core-telemetry-caption" id="core-telemetry-caption">
           Daemon telemetry synchronizing...
         </div>
+
+        <!-- Per-Stage Voice Pipeline Latency Telemetry Strip -->
+        <div class="latency-hud" id="latency-hud" aria-label="Per-stage voice pipeline latency telemetry">
+          <div class="latency-hud-head">
+            <span class="latency-hud-title">⚡ PIPELINE LATENCY</span>
+            <span class="latency-hud-route" id="lat-route-badge">AWAITING TURN · STREAMING READY</span>
+          </div>
+          <div class="latency-stage-grid">
+            <div class="lat-cell">
+              <span class="lat-key">WAKE</span>
+              <strong class="lat-val" id="lat-wake">--</strong>
+            </div>
+            <div class="lat-cell">
+              <span class="lat-key">STT</span>
+              <strong class="lat-val" id="lat-stt">--</strong>
+            </div>
+            <div class="lat-cell">
+              <span class="lat-key">NET/TLS</span>
+              <strong class="lat-val" id="lat-net">--</strong>
+            </div>
+            <div class="lat-cell">
+              <span class="lat-key">QUEUE</span>
+              <strong class="lat-val" id="lat-queue">--</strong>
+            </div>
+            <div class="lat-cell">
+              <span class="lat-key">LLM TTFT</span>
+              <strong class="lat-val" id="lat-ttft">--</strong>
+            </div>
+            <div class="lat-cell">
+              <span class="lat-key">LLM TOTAL</span>
+              <strong class="lat-val" id="lat-llm-total">--</strong>
+            </div>
+            <div class="lat-cell">
+              <span class="lat-key">TTS TTFB</span>
+              <strong class="lat-val" id="lat-tts-ttfb">--</strong>
+            </div>
+            <div class="lat-cell lat-cell-hero">
+              <span class="lat-key">TTFA</span>
+              <strong class="lat-val" id="lat-ttfa">--</strong>
+            </div>
+          </div>
+          <div class="latency-hud-foot" id="lat-foot-summary">
+            Rolling avg: -- · Retries: 0 · Persistent whisper-server + SSE sentence streaming active
+          </div>
+        </div>
       </div>
     </section>
 

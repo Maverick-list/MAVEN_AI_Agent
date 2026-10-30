@@ -42,17 +42,19 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
     """
 
     WAKE_REGEX = re.compile(
-        r"^\s*[\"'\.,\-\s]*(?:(?:hey|hei|halo|hai|ok|okay)\s+)?(?:maven|jarvis|mavin|mayven|meiven|maveran|maveram)\b",
+        r"^\s*[\"'\.,\-\s]*(?:(?:hey|hei|halo|hai|hello|ok|okay)[\s,]+)?(?:maven|jarvis|mavin|mayven|meiven|mavon|maveran|maveram)\b",
         re.IGNORECASE,
     )
     TWO_WORD_WAKE = re.compile(
-        r"^\s*[\"'\.,\-\s]*(?:hey|hei|halo|hai|ok|okay)\s+(?:maven|jarvis)\b",
+        r"^\s*[\"'\.,\-\s]*(?:hey|hei|halo|hai|hello|ok|okay)[\s,]+(?:maven|jarvis|mavin|mayven|meiven|mavon)\b",
         re.IGNORECASE,
     )
-    PROMPT_PASS1 = "Hey Maven, Jarvis, haven, mayhem, bacon, raven"
+    # Place neutral acoustic tokens before wake proper nouns so Whisper never
+    # prompt-echoes "Hey Maven," during ambient music or non-speech bursts.
+    PROMPT_PASS1 = "Vocabulary: music, speech, silence, noise, haven, modern, mayhem, Maven, Jarvis."
     PROMPT_PASS2 = "memory, modern, method, motor, haven, morning, music, meeting, weather, question, report, project"
     DISTRACTOR_REGEX = re.compile(
-        r"\b(memory|modern|method|motor|haven|shaven|mayhem|marvin|bacon|morning|music|meeting)\b",
+        r"(\b(?:memory|modern|method|motor|haven|shaven|mayhem|marvin|bacon|morning|music|meeting)\b|\[music\]|\(music\)|♪)",
         re.IGNORECASE,
     )
 
@@ -88,6 +90,8 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._failed_checks = 0
         self._noise_floor = 0.02
         self._noise_floor_initialized = False
+        self._voiced_burst_frames = 0
+        self.last_wake_ms: float = 0.0
         self._ring_buffer = bytearray()
         # Maintain ~1.2 seconds of 16kHz 16-bit mono audio
         self._max_buffer_bytes = int(self.config.sample_rate * 1.2 * 2)
@@ -99,6 +103,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._last_check_time = 0.0
         self._last_burst_time = 0.0
         self._failed_checks = 0
+        self._voiced_burst_frames = 0
         if self._noise_floor_initialized:
             self._noise_floor = min(0.35, self._noise_floor)
         else:
@@ -115,6 +120,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._last_check_time = 0.0
         self._last_burst_time = 0.0
         self._failed_checks = 0
+        self._voiced_burst_frames = 0
         if self._noise_floor > 0.45:
             self._noise_floor = 0.35
 
@@ -158,15 +164,21 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         is_burst = delta > threshold_delta
 
         if not is_burst:
+            self._voiced_burst_frames = 0
             if (now - self._last_burst_time) > 3.0:
                 self._failed_checks = 0
             return False
 
+        self._voiced_burst_frames += 1
         self._last_burst_time = now
         voice_logger.vad_burst(rms, self._noise_floor, delta)
 
         # Stage 1: Fast VAD check - verify energy exceeds both absolute threshold and ambient floor
         if rms < self.config.speech_start_threshold_rms:
+            return False
+
+        # Reject single-frame impulsive clicks (<64ms) to avoid unnecessary Whisper invocations
+        if self._voiced_burst_frames < 2 and len(self._ring_buffer) < 16000:
             return False
 
         # Adaptive cooldown check between acoustic verification passes
@@ -187,6 +199,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
 
         self._last_check_time = now
         audio_snapshot = bytes(self._ring_buffer)
+        t_wake_start = time.perf_counter()
 
         # Pass 1: Sensitive candidate detection with contrastive proper-noun prompt
         voice_logger.wake_candidate(len(audio_snapshot), self.PROMPT_PASS1, pass_num=1)
@@ -197,16 +210,19 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         )
 
         if not t1 or not self.WAKE_REGEX.search(t1):
+            self.last_wake_ms = round((time.perf_counter() - t_wake_start) * 1000.0, 1)
             voice_logger.wake_result(accepted=False, transcript=t1 or "", reason="pass1_no_match")
             self._failed_checks += 1
             return False
 
         # If high-confidence two-word wake phrase ("Hey Maven", "Hey Jarvis") is detected at prefix:
         if self.TWO_WORD_WAKE.search(t1):
+            self.last_wake_ms = round((time.perf_counter() - t_wake_start) * 1000.0, 1)
             voice_logger.wake_result(accepted=True, phrase=t1)
             self._last_trigger_time = now
             self._ring_buffer.clear()
             self._failed_checks = 0
+            self._voiced_burst_frames = 0
             return True
 
         # Pass 2: Precision confirmation for single-word candidates against common phonetically overlapping words
@@ -217,6 +233,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
             prompt=self.PROMPT_PASS2,
         )
 
+        self.last_wake_ms = round((time.perf_counter() - t_wake_start) * 1000.0, 1)
         if not self.verify_text_candidate(t1, t2):
             voice_logger.wake_result(accepted=False, transcript=f"t1={t1}, t2={t2}", reason="rejected_distractor")
             self._failed_checks += 1
@@ -226,6 +243,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._last_trigger_time = now
         self._ring_buffer.clear()
         self._failed_checks = 0
+        self._voiced_burst_frames = 0
         return True
 
 

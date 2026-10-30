@@ -163,7 +163,11 @@ class VoiceConfig:
 
     # Whisper STT & Local Inference specifications
     whisper_bin_path: str = "/home/firza-ilmi/.local/share/maverick/whisper.cpp/build/bin/whisper-cli"
+    whisper_server_bin_path: str = "/home/firza-ilmi/.local/share/maverick/whisper.cpp/build/bin/whisper-server"
     whisper_model_path: str = "/home/firza-ilmi/.local/share/maverick/whisper.cpp/models/ggml-tiny.bin"
+    whisper_server_host: str = "127.0.0.1"
+    whisper_server_port: int = 18791
+    use_whisper_server: bool = True
     stt_language: str = "auto"  # auto-detect English / Indonesian
     whisper_threads: int = 8
 
@@ -194,6 +198,14 @@ class VoiceConfig:
     elevenlabs_speed: float = 1.0
     elevenlabs_use_speaker_boost: bool = True
     elevenlabs_timeout_sec: float = 12.0
+    elevenlabs_optimize_streaming_latency: int = 3
+
+    # OpenClaw Local Gateway SSE Streaming settings
+    openclaw_http_host: str = "127.0.0.1"
+    openclaw_http_port: int = 18789
+    openclaw_voice_session_user: str = "maven-voice-fast"
+    openclaw_voice_max_tokens: int = 140
+    openclaw_primary_cooldown_sec: float = 300.0
 
     # Audio devices
     device_input: str = "default"

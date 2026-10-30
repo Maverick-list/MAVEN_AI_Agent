@@ -360,11 +360,64 @@
       ttsFoot.textContent = "Zero-latency local synthesis (EN & ID)";
     }
 
+    // 8. Center Dock — Per-Stage Voice Pipeline Latency Telemetry
+    renderLatencyTelemetry(snap.latency || {});
+
     // Update live logs drawer if open
     const logsModal = document.getElementById("logs-modal");
     if (!logsModal.hidden) {
       renderLogs(act.recent_logs || []);
     }
+  }
+
+  function fmtMs(val) {
+    if (val === null || val === undefined || Number.isNaN(Number(val))) return "--";
+    const n = Number(val);
+    if (n >= 1000) return `${(n / 1000).toFixed(2)}s`;
+    return `${Math.round(n)}ms`;
+  }
+
+  function renderLatencyTelemetry(lat) {
+    const latest = lat.latest;
+    const avgs = lat.averages_ms || {};
+    const routeEl = document.getElementById("lat-route-badge");
+    const footEl = document.getElementById("lat-foot-summary");
+    if (!routeEl || !footEl) return;
+
+    if (!latest) {
+      routeEl.textContent = "READY · SSE + WHISPER-SERVER";
+      footEl.textContent = "Awaiting voice/text turn to measure per-stage TTFA & model telemetry";
+      return;
+    }
+
+    const modelShort = String(latest.model_used || "local")
+      .replace("google/", "")
+      .replace("local_intent_router", "LOCAL INTENT")
+      .toUpperCase();
+    const routeTag = String(latest.route || "turn").replace(/_/g, " ").toUpperCase();
+    routeEl.textContent = `${modelShort} · ${routeTag}`;
+
+    const netTotal =
+      latest.network_dns_ms != null || latest.network_tls_ms != null
+        ? Number(latest.network_dns_ms || 0) + Number(latest.network_tls_ms || 0)
+        : null;
+
+    document.getElementById("lat-wake").textContent = fmtMs(latest.wake_ms);
+    document.getElementById("lat-stt").textContent = fmtMs(latest.stt_ms);
+    document.getElementById("lat-net").textContent = netTotal !== null ? fmtMs(netTotal) : "0ms (KA)";
+    document.getElementById("lat-queue").textContent = fmtMs(latest.gateway_queue_ms);
+    document.getElementById("lat-ttft").textContent = fmtMs(latest.llm_ttft_ms);
+    document.getElementById("lat-llm-total").textContent = fmtMs(latest.llm_total_ms);
+    document.getElementById("lat-tts-ttfb").textContent = fmtMs(latest.tts_ttfb_ms);
+    document.getElementById("lat-ttfa").textContent = fmtMs(latest.ttfa_ms);
+
+    const avgTtfa = avgs.ai_ttfa_ms != null ? fmtMs(avgs.ai_ttfa_ms) : fmtMs(avgs.ttfa_ms);
+    const avgStt = fmtMs(avgs.stt_ms);
+    const avgTtft = fmtMs(avgs.llm_ttft_ms);
+    const retries = Number(latest.llm_retries || 0);
+    const chunks = Number(latest.tts_chunks || 0);
+    footEl.textContent =
+      `Turns: ${lat.turn_count || 1} · Avg TTFA ${avgTtfa} (STT ${avgStt}, LLM TTFT ${avgTtft}) · Chunks: ${chunks} · Retries: ${retries}`;
   }
 
   function renderConversations(items) {

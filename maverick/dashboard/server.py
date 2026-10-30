@@ -47,7 +47,12 @@ from maverick.voice.audio import calculate_rms, list_audio_devices
 from maverick.voice.config import VoiceConfig, save_voice_settings
 from maverick.voice.controller import VoiceController
 from maverick.voice.elevenlabs_tts import ElevenLabsError
-from maverick.voice.observability import redact_sensitive_text, voice_logger
+from maverick.voice.observability import (
+    get_latency_summary,
+    record_turn_latency,
+    redact_sensitive_text,
+    voice_logger,
+)
 from maverick.voice.tts import HybridTTSProvider, create_tts_provider
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -420,6 +425,9 @@ class TelemetryHub:
                     status="spoken",
                 )
 
+        elif sub == "LATENCY":
+            self._daemon_state = "idle"
+
         elif sub == "ERROR":
             self._daemon_state = "error"
 
@@ -600,6 +608,7 @@ class TelemetryHub:
                 "bind_address": "127.0.0.1",
             },
             "tts": self.tts.get_status(),
+            "latency": get_latency_summary(limit=25),
             "activity": {
                 "running_apps": self._cached_apps,
                 "recent_actions": recent_activities,
@@ -836,6 +845,7 @@ class TelemetryHub:
                 status="submitted",
             )
 
+        t_turn_start = time.perf_counter()
         self.set_transient_state("thinking", duration_sec=26.0)
         try:
             res = self.controller.handle_voice_command(clean, confirmed=confirmed)
@@ -844,6 +854,7 @@ class TelemetryHub:
             err_msg = redact_sensitive_text(str(exc))
             return {"status": "error", "response": f"Execution error: {err_msg}"}
 
+        t_after_llm = time.perf_counter()
         status = res.get("status", "success")
         reply = res.get("response", "")
         action = res.get("action")
@@ -869,6 +880,42 @@ class TelemetryHub:
         if speak_reply and reply:
             audio_payload = self.run_voice_test(text=reply, browser_audio=browser_audio)
 
+        total_turn_ms = round((time.perf_counter() - t_turn_start) * 1000.0, 1)
+        llm_metrics = res.get("latency") or getattr(self.controller, "last_turn_metrics", {}) or {}
+        llm_total_ms = llm_metrics.get("llm_total_ms")
+        if llm_total_ms is None:
+            llm_total_ms = round((t_after_llm - t_turn_start) * 1000.0, 1)
+        tts_ttfb_ms = (
+            float(audio_payload["latency_ms"])
+            if isinstance(audio_payload, dict) and isinstance(audio_payload.get("latency_ms"), (int, float))
+            else None
+        )
+        ttfa_ms = round(float(llm_total_ms) + (tts_ttfb_ms or 0.0), 1)
+        latency_entry = record_turn_latency(
+            {
+                "route": res.get("route") or llm_metrics.get("route") or "dashboard_command",
+                "lang": llm_metrics.get("lang") or "en",
+                "model_used": res.get("model_used") or llm_metrics.get("model_used") or "local_intent_router",
+                "stt_backend": "dashboard_text",
+                "tts_engine": (audio_payload or {}).get("engine") or "none",
+                "tts_chunks": 1 if audio_payload else 0,
+                "wake_ms": 0.0,
+                "stt_ms": 0.0,
+                "network_dns_ms": getattr(self.tts.primary, "_last_dns_ms", None),
+                "network_tcp_ms": getattr(self.tts.primary, "_last_tcp_ms", None),
+                "network_tls_ms": getattr(self.tts.primary, "_last_tls_ms", None),
+                "gateway_queue_ms": llm_metrics.get("gateway_queue_ms", 0.0),
+                "llm_ttft_ms": llm_metrics.get("llm_ttft_ms", 0.0),
+                "llm_first_sentence_ms": llm_metrics.get("llm_first_sentence_ms", llm_total_ms),
+                "llm_total_ms": llm_total_ms,
+                "llm_retries": llm_metrics.get("llm_retries", 0),
+                "tts_ttfb_ms": tts_ttfb_ms,
+                "tts_playback_ms": getattr(self.tts.primary, "_last_playback_ms", None),
+                "ttfa_ms": ttfa_ms,
+                "total_turn_ms": total_turn_ms,
+            }
+        )
+
         self.notify_change()
         return {
             "status": status,
@@ -877,6 +924,7 @@ class TelemetryHub:
             "requires_confirmation": needs_confirm,
             "pending_command": clean if needs_confirm else None,
             "tts_delivery": audio_payload,
+            "latency": latency_entry,
         }
 
     def update_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -959,6 +1007,10 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
 
         if route == "/api/status":
             self._send_json(self.hub.get_snapshot())
+            return
+
+        if route == "/api/latency":
+            self._send_json({"status": "success", "latency": get_latency_summary(limit=25)})
             return
 
         if route == "/api/voice/voices":

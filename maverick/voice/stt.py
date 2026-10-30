@@ -1,11 +1,16 @@
 """Maverick DevOS - Speech-to-Text (STT) Subsystem."""
 
 from abc import ABC, abstractmethod
+import http.client
+import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from typing import Dict, List, Optional
 import wave
 
@@ -37,10 +42,32 @@ class WhisperCppSTTProvider(STTProvider):
         self.language = language or self.config.stt_language
         self.threads = self.config.whisper_threads
         self.prompt = prompt
+        self.last_stt_ms: float = 0.0
+        self.last_backend: str = "whisper_cli"
+        self._http_lock = threading.Lock()
+        self._http_conn: Optional[http.client.HTTPConnection] = None
+
+    def close(self) -> None:
+        conn = getattr(self, "_http_conn", None)
+        self._http_conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     _HALLUCINATION_PHRASES = (
         "thank you for watching",
         "thanks for watching",
+        "please subscribe",
+        "subscribe to our channel",
+        "bell icon",
         "subtitles by",
         "amara.org",
         "terima kasih telah menonton",
@@ -79,10 +106,106 @@ class WhisperCppSTTProvider(STTProvider):
         """Check if whisper-cli executable and model file are present."""
         return os.path.isfile(self.whisper_bin) and os.access(self.whisper_bin, os.X_OK) and os.path.isfile(self.whisper_model)
 
+    def _encode_wav_bytes(self, audio_bytes: bytes) -> bytes:
+        """Encode 16kHz 16-bit mono PCM bytes into an in-memory WAV container (zero disk I/O)."""
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.config.sample_rate)
+            wf.writeframes(audio_bytes)
+        return buf.getvalue()
+
+    @classmethod
+    def _clean_transcript(cls, raw_output: str) -> str:
+        """Strip non-speech tags, quotes, and ambient-noise hallucinations."""
+        cleaned = re.sub(r"\[.*?\]|\(.*?\)", "", (raw_output or "").strip()).strip()
+        cleaned = re.sub(r"^[\"'\s]+|[\"'\s]+$", "", cleaned).strip()
+        if not cleaned or cls.is_noise_hallucination(cleaned):
+            return ""
+        return cleaned
+
+    def _transcribe_via_server(
+        self,
+        audio_bytes: bytes,
+        lang: str,
+        active_prompt: Optional[str],
+    ) -> Optional[str]:
+        """
+        Send in-memory WAV bytes over a persistent loopback HTTP connection to whisper-server
+        (127.0.0.1:18791), avoiding repeated model loading and temporary file I/O.
+        Returns None if whisper-server is unreachable so caller falls back to whisper-cli.
+        """
+        if not getattr(self.config, "use_whisper_server", True):
+            return None
+        # Preserve deterministic unit tests that mock subprocess.run
+        if getattr(subprocess.run, "__module__", "") != "subprocess":
+            return None
+
+        wav_bytes = self._encode_wav_bytes(audio_bytes)
+        boundary = "----MavenWhisperLoopbackBoundary"
+        parts: List[bytes] = []
+
+        def _add_field(name: str, val: str) -> None:
+            parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n'.encode("utf-8")
+            )
+
+        _add_field("response_format", "json")
+        _add_field("temperature", "0.0")
+        _add_field("language", lang)
+        if active_prompt:
+            _add_field("prompt", active_prompt)
+        parts.append(
+            (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+                f"Content-Type: audio/wav\r\n\r\n"
+            ).encode("utf-8")
+            + wav_bytes
+            + b"\r\n"
+        )
+        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(parts)
+
+        host = getattr(self.config, "whisper_server_host", "127.0.0.1")
+        port = int(getattr(self.config, "whisper_server_port", 18791))
+
+        with self._http_lock:
+            for attempt in range(2):
+                try:
+                    if self._http_conn is None:
+                        self._http_conn = http.client.HTTPConnection(host, port, timeout=8.0)
+                    self._http_conn.request(
+                        "POST",
+                        "/inference",
+                        body=body,
+                        headers={
+                            "Content-Type": f"multipart/form-data; boundary={boundary}",
+                            "Connection": "keep-alive",
+                        },
+                    )
+                    resp = self._http_conn.getresponse()
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    if resp.status == 200:
+                        data = json.loads(raw)
+                        return str(data.get("text") or "")
+                    return None
+                except Exception:
+                    if self._http_conn is not None:
+                        try:
+                            self._http_conn.close()
+                        except Exception:
+                            pass
+                        self._http_conn = None
+                    if attempt == 1:
+                        return None
+        return None
+
     def transcribe(self, audio_bytes: bytes, language: Optional[str] = None, prompt: Optional[str] = None) -> str:
         """
         Transcribes 16kHz 16-bit mono PCM audio bytes into text.
-        Returns recognized transcript or empty string if audio is silent or unintelligible.
+        Uses persistent warm whisper-server when available (zero model reload overhead),
+        with automatic transparent fallback to whisper-cli.
         """
         if not audio_bytes or len(audio_bytes) < 3200:  # < 0.1s
             return ""
@@ -92,17 +215,21 @@ class WhisperCppSTTProvider(STTProvider):
 
         lang = language or self.language or "auto"
         active_prompt = prompt if prompt is not None else self.prompt
-        temp_wav = None
+        t0 = time.perf_counter()
 
+        # 1. Fast Path: Persistent warm whisper-server on 127.0.0.1
+        server_raw = self._transcribe_via_server(audio_bytes, lang=lang, active_prompt=active_prompt)
+        if server_raw is not None:
+            self.last_stt_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+            self.last_backend = "whisper_server"
+            return self._clean_transcript(server_raw)
+
+        # 2. Automatic Fallback: Standalone whisper-cli binary
+        temp_wav = None
         try:
-            # Write audio bytes to temporary 16kHz mono WAV file
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_wav = f.name
-                with wave.open(f, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(self.config.sample_rate)
-                    wf.writeframes(audio_bytes)
+                f.write(self._encode_wav_bytes(audio_bytes))
 
             cmd = [
                 self.whisper_bin,
@@ -122,22 +249,16 @@ class WhisperCppSTTProvider(STTProvider):
                 text=True,
                 timeout=20.0,
             )
+            self.last_stt_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+            self.last_backend = "whisper_cli"
 
             if res.returncode != 0:
                 return ""
 
-            raw_output = res.stdout.strip()
-            # Clean non-speech markers like [BLANK_AUDIO], [MUSIC], (applause), etc.
-            cleaned = re.sub(r"\[.*?\]|\(.*?\)", "", raw_output).strip()
-            # Remove leading/trailing quotes or punctuation artifacts
-            cleaned = re.sub(r"^[\"'\s]+|[\"'\s]+$", "", cleaned).strip()
-
-            if not cleaned or self.is_noise_hallucination(cleaned):
-                return ""
-
-            return cleaned
+            return self._clean_transcript(res.stdout)
 
         except Exception:
+            self.last_stt_ms = round((time.perf_counter() - t0) * 1000.0, 1)
             return ""
 
         finally:

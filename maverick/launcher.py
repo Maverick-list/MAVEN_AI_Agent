@@ -17,6 +17,8 @@ from maverick.voice.config import VoiceConfig
 STATE_DIR = os.path.expanduser("~/.local/state/maverick")
 PID_FILE = os.path.join(STATE_DIR, "maven-voice.pid")
 LOG_FILE = os.path.join(STATE_DIR, "maven-voice.log")
+WHISPER_PID_FILE = os.path.join(STATE_DIR, "maven-whisper.pid")
+WHISPER_LOG_FILE = os.path.join(STATE_DIR, "maven-whisper.log")
 DASHBOARD_PID_FILE = os.path.join(STATE_DIR, "maven-dashboard.pid")
 DASHBOARD_LOG_FILE = os.path.join(STATE_DIR, "maven-dashboard.log")
 
@@ -119,13 +121,98 @@ def verify_audio_hardware() -> Tuple[bool, str, str]:
 
 
 def verify_whisper_model() -> Tuple[bool, str]:
-    """Check that whisper-cli binary and GGML model file exist."""
+    """Check that whisper-cli binary and GGML model file exist, and report warm whisper-server status."""
     cfg = VoiceConfig()
     if not os.path.isfile(cfg.whisper_bin_path) or not os.access(cfg.whisper_bin_path, os.X_OK):
         return False, f"whisper-cli binary missing or non-executable at {cfg.whisper_bin_path}"
     if not os.path.isfile(cfg.whisper_model_path) or os.path.getsize(cfg.whisper_model_path) < 1000000:
         return False, f"ggml-tiny.bin model missing or corrupted at {cfg.whisper_model_path}"
+    srv_pid = get_whisper_server_pid()
+    if srv_pid:
+        return True, f"whisper-server warm (PID {srv_pid}) + ggml-tiny.bin ready"
     return True, "whisper-cli and ggml-tiny.bin ready"
+
+
+def get_whisper_server_pid() -> Optional[int]:
+    """Retrieve PID of running persistent local whisper-server if active."""
+    if os.path.isfile(WHISPER_PID_FILE):
+        try:
+            with open(WHISPER_PID_FILE, "r") as f:
+                pid = int(f.read().strip())
+            if psutil.pid_exists(pid):
+                proc = psutil.Process(pid)
+                if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+                    if "whisper-server" in " ".join(proc.cmdline()):
+                        return pid
+            os.remove(WHISPER_PID_FILE)
+        except Exception:
+            pass
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmd = " ".join(proc.info.get("cmdline") or [])
+            if "whisper-server" in cmd and "18791" in cmd:
+                return int(proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
+
+def ensure_whisper_server() -> Optional[int]:
+    """Start persistent local whisper-server (127.0.0.1:18791) so ggml-tiny.bin stays warm in RAM."""
+    ensure_state_dir()
+    existing = get_whisper_server_pid()
+    if existing:
+        return existing
+    cfg = VoiceConfig()
+    if not os.path.isfile(cfg.whisper_server_bin_path) or not os.access(cfg.whisper_server_bin_path, os.X_OK):
+        return None
+    if not os.path.isfile(cfg.whisper_model_path):
+        return None
+    try:
+        log_fd = open(WHISPER_LOG_FILE, "a")
+        proc = subprocess.Popen(
+            [
+                cfg.whisper_server_bin_path,
+                "--host", cfg.whisper_server_host,
+                "--port", str(cfg.whisper_server_port),
+                "-m", cfg.whisper_model_path,
+                "-t", str(cfg.whisper_threads),
+                "-nt",
+                "-sns",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
+            start_new_session=True,
+        )
+        with open(WHISPER_PID_FILE, "w") as f:
+            f.write(str(proc.pid))
+        time.sleep(0.35)
+        if proc.poll() is None:
+            return proc.pid
+    except Exception:
+        pass
+    return None
+
+
+def stop_whisper_server() -> None:
+    """Stop persistent local whisper-server if running."""
+    pid = get_whisper_server_pid()
+    if pid:
+        try:
+            proc = psutil.Process(pid)
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                psutil.Process(pid).kill()
+            except Exception:
+                pass
+    if os.path.exists(WHISPER_PID_FILE):
+        try:
+            os.remove(WHISPER_PID_FILE)
+        except OSError:
+            pass
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -161,8 +248,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     else:
         print(f"\033[93m⚠ {tts_desc}\033[0m")
 
-    # 3. Whisper STT Verification
+    # 3. Whisper STT Verification & Warm Server Activation
     print("  [3/5] Checking Whisper.cpp Model...", end=" ", flush=True)
+    ensure_whisper_server()
     w_ok, w_msg = verify_whisper_model()
     if w_ok:
         print(f"\033[92m✔ {w_msg}\033[0m")
@@ -239,6 +327,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
     if os.path.exists(PID_FILE):
         os.remove(PID_FILE)
+    stop_whisper_server()
     return 0
 
 

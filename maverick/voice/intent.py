@@ -24,7 +24,7 @@ class BilingualIntentClassifier:
             "web browser", "internet", "browsing",
         ],
         "firefox": [
-            "firefox", "mozilla", "mozilla firefox", "peramban firefox",
+            "firefox", "fire fox", "mozilla", "mozilla firefox", "peramban firefox",
         ],
         "nautilus": [
             "files", "nautilus", "file manager", "file explorer",
@@ -174,7 +174,10 @@ class BilingualIntentClassifier:
             return {"intent": "spotify_status", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
 
         # 4. Application Launching
-        is_launch_syntax = any(clean.startswith(p) for p in ("open ", "launch ", "start ", "buka ", "jalankan ", "mau ")) or "coding" in clean
+        is_launch_syntax = any(
+            clean.startswith(p)
+            for p in ("open ", "launch ", "start ", "buka ", "jalankan ", "mau ", "mulai ", "ayo ", "siapkan ")
+        )
         for app_id, triggers in cls.APP_TARGETS.items():
             for t in triggers:
                 # Match explicit app name in launch context

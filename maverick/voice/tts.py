@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from maverick.voice.config import VoiceConfig, load_voice_settings
 from maverick.voice.elevenlabs_tts import ElevenLabsTTSProvider
@@ -206,6 +206,108 @@ class HybridTTSProvider(TTSProvider):
             self.last_used_engine = "speech_dispatcher"
         return ok_fb
 
+    def speak_stream(
+        self,
+        sentences: Iterable[str],
+        language: Optional[str] = None,
+        overrides: Optional[Dict[str, Any]] = None,
+        on_first_audio: Optional[Callable[[], None]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Speak an iterator of sentence chunks with low-latency streaming synthesis and
+        automatic per-sentence fallback to Speech Dispatcher if ElevenLabs fails.
+        """
+        preferred = self._preferred_engine()
+        collected: List[str] = []
+        raw_iter = iter(sentences)
+
+        def _tracking_iter() -> Iterable[str]:
+            for s in raw_iter:
+                clean = (s or "").strip()
+                if clean:
+                    collected.append(clean)
+                    yield clean
+
+        if preferred == "elevenlabs" and self.primary.is_configured():
+            self._unconfigured_logged = False
+            res = self.primary.speak_stream(
+                _tracking_iter(),
+                language=language,
+                overrides=overrides,
+                on_first_audio=on_first_audio,
+            )
+            if res.get("ok"):
+                self.last_used_engine = "elevenlabs"
+                self.last_fallback_reason = None
+                res["engine"] = "elevenlabs"
+                res["full_text"] = " ".join(collected)
+                return res
+
+            reason = str(
+                res.get("reason")
+                or res.get("error_code")
+                or getattr(self.primary, "_last_error_code", None)
+                or "synthesis_failed"
+            )
+            self.last_fallback_reason = reason
+            voice_logger.tts_fallback("elevenlabs", "speech_dispatcher", reason=reason)
+            tail_sents = [c for c in ((s or "").strip() for s in raw_iter) if c]
+            collected.extend(tail_sents)
+            fallback_queue: List[str] = []
+            if res.get("failed_sentence"):
+                fallback_queue.append(str(res["failed_sentence"]))
+                fallback_queue.extend(tail_sents)
+            else:
+                fallback_queue = list(collected)
+
+            t_fb = time.perf_counter()
+            if fallback_queue:
+                if on_first_audio and not res.get("wrote_any"):
+                    try:
+                        on_first_audio()
+                    except Exception:
+                        pass
+                for fb_sent in fallback_queue:
+                    self.fallback.speak(fb_sent, wait=True, language=language)
+            self.last_used_engine = "speech_dispatcher"
+            return {
+                "ok": bool(fallback_queue),
+                "engine": "speech_dispatcher",
+                "chunks": len(fallback_queue),
+                "tts_ttfb_ms": 15.0,
+                "tts_playback_ms": round((time.perf_counter() - t_fb) * 1000.0, 1),
+                "dns_ms": res.get("dns_ms", 0.0),
+                "tls_ms": res.get("tls_ms", 0.0),
+                "full_text": " ".join(collected),
+            }
+
+        # Direct Speech Dispatcher streaming sentence-by-sentence
+        t0 = time.perf_counter()
+        first_ms: Optional[float] = None
+        any_ok = False
+        for sent in _tracking_iter():
+            if first_ms is None:
+                first_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                if on_first_audio:
+                    try:
+                        on_first_audio()
+                    except Exception:
+                        pass
+            if self.fallback.speak(sent, wait=True, language=language):
+                any_ok = True
+        if any_ok:
+            self.last_used_engine = "speech_dispatcher"
+        return {
+            "ok": any_ok,
+            "engine": "speech_dispatcher",
+            "chunks": len(collected),
+            "tts_ttfb_ms": first_ms or 0.0,
+            "tts_playback_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+            "dns_ms": 0.0,
+            "tls_ms": 0.0,
+            "full_text": " ".join(collected),
+        }
+
     def stop(self) -> None:
         self.primary.stop()
         self.fallback.stop()
@@ -216,10 +318,10 @@ class HybridTTSProvider(TTSProvider):
     def get_status(self) -> Dict[str, Any]:
         el_status = self.primary.get_public_status()
         preferred = self._preferred_engine()
-        spd_avail = self.fallback.is_available()
+        spd_avail = getattr(self.fallback, "is_available", lambda: True)()
         active_mode = (
             "elevenlabs"
-            if (preferred == "elevenlabs" and el_status["configured"] and not el_status["last_error_code"])
+            if (preferred == "elevenlabs" and el_status.get("configured") and not el_status.get("last_error_code"))
             else "speech_dispatcher"
         )
         return {
@@ -257,6 +359,40 @@ class MockTTSProvider(TTSProvider):
         time.sleep(0.01)
         self._is_speaking = False
         return True
+
+    def speak_stream(
+        self,
+        sentences: Iterable[str],
+        language: Optional[str] = None,
+        overrides: Optional[Dict[str, Any]] = None,
+        on_first_audio: Optional[Callable[[], None]] = None,
+    ) -> Dict[str, Any]:
+        parts: List[str] = []
+        self._is_speaking = True
+        try:
+            for idx, s in enumerate(sentences):
+                clean = (s or "").strip()
+                if not clean:
+                    continue
+                if idx == 0 and on_first_audio:
+                    on_first_audio()
+                parts.append(clean)
+                time.sleep(0.005)
+            full = " ".join(parts)
+            if full:
+                self.spoken_texts.append(full)
+            return {
+                "ok": bool(parts),
+                "engine": "mock",
+                "chunks": len(parts),
+                "tts_ttfb_ms": 5.0,
+                "tts_playback_ms": 10.0,
+                "dns_ms": 0.0,
+                "tls_ms": 0.0,
+                "full_text": full,
+            }
+        finally:
+            self._is_speaking = False
 
     def stop(self) -> None:
         self._is_speaking = False

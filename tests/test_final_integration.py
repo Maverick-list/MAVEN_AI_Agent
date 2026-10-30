@@ -116,8 +116,8 @@ class TestFinalIntegration(unittest.TestCase):
     # 6. Unknown Speech Fallback
     def test_unknown_speech_safe_fallback(self):
         res = self.ctl.handle_voice_command("Fly me to the moon on a giant rocket", confirmed=False)
-        # Must not execute arbitrary action
-        self.assertIn(res["status"], ("unhandled", "error", "rate_limited"))
+        # Must route safely to conversational fallback or graceful notice, never executing arbitrary desktop actions
+        self.assertIn(res["status"], ("success", "unhandled", "error", "rate_limited"))
         self.assertNotIn("action", res)
 
     # 7. Volume Boundary Enforcement

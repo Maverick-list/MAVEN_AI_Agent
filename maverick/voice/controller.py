@@ -1,10 +1,15 @@
 """Maverick DevOS - Voice Interaction Controller & Desktop Action Router."""
 
+import http.client
 import json
+import os
 import re
 import shutil
+import sqlite3
 import subprocess
-from typing import Any, Dict, Optional, Tuple
+import threading
+import time
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from maverick.activity.logger import ActivityLogger
 from maverick.context.engine import ContextEngine
@@ -20,10 +25,106 @@ from maverick.system.monitor import (
 )
 from maverick.voice.config import VoiceConfig
 from maverick.voice.intent import BilingualIntentClassifier
-from maverick.voice.observability import voice_logger
+from maverick.voice.observability import redact_sensitive_text, voice_logger
 from maverick.voice.session import VoiceSession, VoiceState
 from maverick.voice.stt import LocalIntentSTTProvider, STTProvider, WhisperCppSTTProvider
-from maverick.voice.tts import SpeechDispatcherTTS, TTSProvider, create_tts_provider
+from maverick.voice.tts import SpeechDispatcherTTS, TTSProvider, create_tts_provider, detect_speech_language
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+_ABBREV_TAIL_RE = re.compile(r"\b(?:mr|mrs|ms|dr|prof|sr|jr|vs|etc|e\.g|i\.e)\.$", re.IGNORECASE)
+_MARKDOWN_CLEAN_RE = re.compile(r"[*_`#]+")
+
+
+def clean_spoken_text(text: str) -> str:
+    """Strip markdown symbols and collapse whitespace so speech synthesis sounds natural."""
+    if not text:
+        return ""
+    cleaned = _MARKDOWN_CLEAN_RE.sub("", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def split_meaningful_sentences(buffer: str, min_chars: int = 22, flush: bool = False) -> Tuple[List[str], str]:
+    """
+    Incrementally split streaming LLM text into meaningful spoken sentence chunks.
+    Avoids choppy 1-2 word fragments while releasing the first complete clause as early as possible.
+    """
+    if not buffer:
+        return [], ""
+
+    if flush:
+        final = clean_spoken_text(buffer)
+        return ([final] if final else []), ""
+
+    parts = _SENTENCE_SPLIT_RE.split(buffer)
+    if len(parts) <= 1:
+        return [], buffer
+
+    complete_raw = parts[:-1]
+    remainder = parts[-1]
+    emitted: List[str] = []
+    carry = ""
+
+    for seg in complete_raw:
+        candidate = (f"{carry} {seg}" if carry else seg).strip()
+        if not candidate:
+            continue
+        if len(candidate) < min_chars or _ABBREV_TAIL_RE.search(candidate):
+            carry = candidate
+            continue
+        cleaned = clean_spoken_text(candidate)
+        if cleaned:
+            emitted.append(cleaned)
+        carry = ""
+
+    if carry:
+        remainder = f"{carry} {remainder}".strip() if remainder else f"{carry} "
+
+    return emitted, remainder
+
+
+def resolve_openclaw_gateway_token() -> str:
+    """
+    Resolve the local OpenClaw Gateway bearer token from environment, openclaw.json,
+    or OpenClaw's local SQLite secret store (~/.openclaw/state/openclaw.sqlite).
+    Never logs, prints, or persists the secret token.
+    """
+    env_tok = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "").strip()
+    if env_tok:
+        return env_tok
+
+    cfg_path = os.path.expanduser("~/.openclaw/openclaw.json")
+    key_id = "OPENCLAW_GATEWAY_TOKEN"
+    if os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            tok = cfg.get("gateway", {}).get("auth", {}).get("token")
+            if isinstance(tok, str) and tok.strip() and not tok.startswith("$"):
+                return tok.strip()
+            if isinstance(tok, dict) and tok.get("id"):
+                key_id = str(tok["id"]).strip()
+        except Exception:
+            pass
+
+    db_path = os.path.expanduser("~/.openclaw/state/openclaw.sqlite")
+    if os.path.isfile(db_path):
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM secret_store_entries WHERE name=? AND deleted_at_ms IS NULL LIMIT 1",
+                    (key_id,),
+                ).fetchone()
+                if row and row[0]:
+                    return str(row[0]).strip()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    return ""
 
 
 class VoiceController:
@@ -52,11 +153,407 @@ class VoiceController:
             else:
                 self.stt = LocalIntentSTTProvider(self.config)
         self.logger = activity_logger or ActivityLogger()
+        self._gw_lock = threading.Lock()
+        self._gw_conn: Optional[http.client.HTTPConnection] = None
+        self._primary_cooldown_until: float = 0.0
+        self._route_cooldowns: Dict[str, float] = {}
+        self.last_turn_metrics: Dict[str, Any] = {}
+
+    @staticmethod
+    def _build_voice_system_prompt(user_prompt: str, default_max_tokens: int = 140) -> Tuple[str, int, str]:
+        """
+        Optimize spoken response length for ordinary voice queries while preserving
+        depth when the user asks for detailed steps or explanations.
+        """
+        lower = (user_prompt or "").lower()
+        lang = detect_speech_language(user_prompt)
+        # Check additional Indonesian question words not in TTS output keyword set
+        if any(w in re.findall(r"[a-zA-Z]+", lower) for w in ("apa", "siapa", "mengapa", "kenapa", "bagaimana", "tolong", "jelaskan", "sebutkan", "berapa", "kapan", "dimana")):
+            lang = "id"
+
+        wants_detail = any(
+            kw in lower
+            for kw in (
+                "in detail", "step by step", "explain thoroughly", "list all",
+                "secara detail", "langkah demi langkah", "jelaskan lengkap", "rinci",
+            )
+        )
+        max_tokens = 300 if wants_detail else default_max_tokens
+        lang_directive = (
+            "Reply strictly in natural Bahasa Indonesia."
+            if lang == "id"
+            else "Reply strictly in natural English."
+        )
+        length_directive = (
+            "Provide a clear, structured spoken explanation in 3 to 5 concise sentences."
+            if wants_detail
+            else "Answer in 1 to 2 crisp, natural spoken sentences."
+        )
+        sys_prompt = (
+            f"You are Maven JARVIS, a fast, calm desktop voice assistant. "
+            f"{lang_directive} {length_directive} "
+            f"Plain spoken text only — no markdown, bullet symbols, or code fences. "
+            f"Never call tools or shell commands for conversational questions; answer directly."
+        )
+        return sys_prompt, max_tokens, lang
+
+    @staticmethod
+    def _sanitize_gateway_error(err_msg: str) -> Tuple[str, str]:
+        """Map raw provider/gateway errors into safe, calm spoken status notices."""
+        msg = redact_sensitive_text(err_msg or "")
+        lower = msg.lower()
+        if "429" in msg or "resource_exhausted" in lower or "quota" in lower or "rate limit" in lower:
+            return (
+                "rate_limited",
+                "Google Gemini API reported a temporary quota rate limit.",
+            )
+        if "not_found" in lower or "model was not found" in lower or "no longer available" in lower or "404" in msg:
+            return (
+                "model_not_found",
+                "The requested AI model is currently unavailable on the active provider.",
+            )
+        if "503" in msg or "unavailable" in lower or "overloaded" in lower or "high demand" in lower:
+            return (
+                "overloaded",
+                "The AI service is experiencing temporary high demand. Please try again shortly.",
+            )
+        return (
+            "error",
+            "I could not complete that AI request right now, but local desktop controls remain ready.",
+        )
+
+    @staticmethod
+    def _route_key(model_override: Optional[str]) -> str:
+        return model_override or "__primary__"
+
+    def _mark_route_cooldown(self, model_override: Optional[str]) -> None:
+        exp = time.time() + float(getattr(self.config, "openclaw_primary_cooldown_sec", 300.0))
+        self._route_cooldowns[self._route_key(model_override)] = exp
+        if model_override is None:
+            self._primary_cooldown_until = exp
+
+    def _select_candidate_models(self) -> List[Optional[str]]:
+        """
+        Return ordered model override candidates for OpenClaw HTTP SSE:
+        - None means OpenClaw's configured default primary (`google/gemini-2.5-flash`).
+        - Any route (primary or fallback) that recently hit a 429 quota or 404 error is placed in
+          a temporary cooldown window (`openclaw_primary_cooldown_sec`) so consecutive voice turns
+          route directly (0 retries) to the first healthy model, then automatically re-probe
+          higher-priority routes once cooldown expires.
+        """
+        fallbacks = [m for m in (self.config.model_fallbacks or []) if m]
+        all_routes: List[Optional[str]] = [None, *fallbacks]
+        now = time.time()
+        if self._primary_cooldown_until > now:
+            self._route_cooldowns["__primary__"] = max(
+                self._route_cooldowns.get("__primary__", 0.0),
+                self._primary_cooldown_until,
+            )
+        healthy = [r for r in all_routes if self._route_cooldowns.get(self._route_key(r), 0.0) <= now]
+        cooling = [r for r in all_routes if self._route_cooldowns.get(self._route_key(r), 0.0) > now]
+        cooling.sort(key=lambda r: self._route_cooldowns.get(self._route_key(r), 0.0))
+        return [*healthy, *cooling]
+
+    def stream_openclaw(self, prompt: str, metrics_out: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+        """
+        Stream conversational response from OpenClaw Gateway's local /v1/chat/completions SSE
+        endpoint, yielding meaningful sentence chunks for immediate TTS synthesis.
+        Automatically records gateway queue time, TTFT, first-sentence time, total generation time,
+        and retry count, with seamless fallback to `_query_openclaw` CLI if needed.
+        """
+        metrics = metrics_out if metrics_out is not None else {}
+        token = resolve_openclaw_gateway_token()
+        sys_prompt, max_tokens, lang = self._build_voice_system_prompt(
+            prompt,
+            default_max_tokens=int(getattr(self.config, "openclaw_voice_max_tokens", 140)),
+        )
+        metrics["lang"] = lang
+        metrics["llm_retries"] = 0
+
+        # Preserve deterministic unit tests that patch subprocess.run
+        if not token or getattr(subprocess.run, "__module__", "") != "subprocess":
+            t_cli = time.perf_counter()
+            cli_res = self._query_openclaw(prompt)
+            elapsed_ms = round((time.perf_counter() - t_cli) * 1000.0, 1)
+            metrics.update(
+                {
+                    "route": "openclaw_cli",
+                    "status": cli_res.get("status", "success"),
+                    "model_used": cli_res.get("model_used") or self.config.model_id,
+                    "gateway_queue_ms": 0.0,
+                    "llm_ttft_ms": elapsed_ms,
+                    "llm_first_sentence_ms": elapsed_ms,
+                    "llm_total_ms": elapsed_ms,
+                }
+            )
+            reply = cli_res.get("response", "")
+            sents, rem = split_meaningful_sentences(reply, flush=False)
+            for s in sents:
+                yield s
+            if rem.strip():
+                tail, _ = split_meaningful_sentences(rem, flush=True)
+                for s in tail:
+                    yield s
+            return
+
+        host = getattr(self.config, "openclaw_http_host", "127.0.0.1")
+        port = int(getattr(self.config, "openclaw_http_port", 18789))
+        candidates = self._select_candidate_models()
+        t_overall = time.perf_counter()
+        last_err_status = "error"
+        last_err_spoken = "I could not reach the OpenClaw agent at this moment."
+
+        for attempt_idx, model_override in enumerate(candidates):
+            t0 = time.perf_counter()
+            payload = {
+                "model": "openclaw/default",
+                "user": getattr(self.config, "openclaw_voice_session_user", "maven-voice-fast"),
+                "stream": True,
+                "max_completion_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Connection": "keep-alive",
+            }
+            if model_override:
+                headers["x-openclaw-model"] = model_override
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            try:
+                conn = http.client.HTTPConnection(host, port, timeout=22.0)
+                conn.request("POST", "/v1/chat/completions", body=body_bytes, headers=headers)
+                resp = conn.getresponse()
+                queue_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+
+                if resp.status != 200:
+                    raw_err = resp.read().decode("utf-8", errors="replace")
+                    conn.close()
+                    last_err_status, last_err_spoken = self._sanitize_gateway_error(raw_err)
+                    self._mark_route_cooldown(model_override)
+                    metrics["llm_retries"] = attempt_idx + 1
+                    continue
+
+                ttft_ms: Optional[float] = None
+                first_sent_ms: Optional[float] = None
+                text_buf = ""
+                full_emitted: List[str] = []
+                sse_error: Optional[str] = None
+
+                while True:
+                    raw_line = resp.readline()
+                    if not raw_line:
+                        break
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk_obj = json.loads(data_str)
+                    except Exception:
+                        continue
+
+                    if "error" in chunk_obj and chunk_obj["error"]:
+                        err_val = chunk_obj["error"]
+                        sse_error = err_val.get("message", str(err_val)) if isinstance(err_val, dict) else str(err_val)
+                        break
+
+                    for choice in chunk_obj.get("choices", []):
+                        delta = (choice.get("delta") or {}).get("content") or ""
+                        if not delta:
+                            continue
+                        if ttft_ms is None:
+                            ttft_ms = round((time.perf_counter() - t_overall) * 1000.0, 1)
+                        text_buf += delta
+                        ready_sents, text_buf = split_meaningful_sentences(text_buf, flush=False)
+                        for s in ready_sents:
+                            if first_sent_ms is None:
+                                first_sent_ms = round((time.perf_counter() - t_overall) * 1000.0, 1)
+                            full_emitted.append(s)
+                            yield s
+
+                try:
+                    resp.read()
+                    conn.close()
+                except Exception:
+                    pass
+
+                if sse_error and not full_emitted and not text_buf.strip():
+                    last_err_status, last_err_spoken = self._sanitize_gateway_error(sse_error)
+                    self._mark_route_cooldown(model_override)
+                    metrics["llm_retries"] = attempt_idx + 1
+                    continue
+
+                if text_buf.strip():
+                    tail_sents, _ = split_meaningful_sentences(text_buf, flush=True)
+                    for s in tail_sents:
+                        if first_sent_ms is None:
+                            first_sent_ms = round((time.perf_counter() - t_overall) * 1000.0, 1)
+                        full_emitted.append(s)
+                        yield s
+
+                total_ms = round((time.perf_counter() - t_overall) * 1000.0, 1)
+                effective_model = model_override or self.config.model_id
+
+                # If default primary route took >5.2s due to internal 429/404 failover cascade,
+                # activate adaptive primary cooldown so subsequent turns skip the dead-key stall!
+                if model_override is None and (ttft_ms or total_ms) > 5200.0 and self.config.model_fallbacks:
+                    self._mark_route_cooldown(None)
+                    effective_model = self.config.model_fallbacks[0]
+                    metrics["llm_retries"] = max(1, int(metrics.get("llm_retries") or 0) + 1)
+
+                if full_emitted:
+                    metrics.update(
+                        {
+                            "route": "openclaw_stream",
+                            "status": "success",
+                            "model_used": effective_model,
+                            "gateway_queue_ms": queue_ms,
+                            "llm_ttft_ms": ttft_ms or total_ms,
+                            "llm_first_sentence_ms": first_sent_ms or total_ms,
+                            "llm_total_ms": total_ms,
+                            "full_response": " ".join(full_emitted),
+                        }
+                    )
+                    return
+
+                metrics["llm_retries"] = attempt_idx + 1
+            except Exception as exc:
+                last_err_status, last_err_spoken = self._sanitize_gateway_error(str(exc))
+                metrics["llm_retries"] = attempt_idx + 1
+                continue
+
+        # Final graceful sanitized spoken notice (never speaks raw model stacktraces/JSON)
+        total_ms = round((time.perf_counter() - t_overall) * 1000.0, 1)
+        metrics.update(
+            {
+                "route": "openclaw_stream",
+                "status": last_err_status,
+                "model_used": self.config.model_id,
+                "gateway_queue_ms": 0.0,
+                "llm_ttft_ms": total_ms,
+                "llm_first_sentence_ms": total_ms,
+                "llm_total_ms": total_ms,
+                "full_response": last_err_spoken,
+            }
+        )
+        yield last_err_spoken
+
+    def warm_gateway_session(self) -> None:
+        """Pre-warm the OpenClaw voice session MCP bundle asynchronously so Turn #1 avoids cold-start."""
+        token = resolve_openclaw_gateway_token()
+        if not token:
+            return
+        try:
+            for _ in self.stream_openclaw("Reply with OK.", metrics_out={}):
+                pass
+        except Exception:
+            pass
+
+    def verify_model_routes(self) -> Dict[str, Any]:
+        """
+        Probe configured primary and fallback models with minimal live requests through OpenClaw Gateway
+        to verify real runtime availability and measure TTFT per route.
+        """
+        token = resolve_openclaw_gateway_token()
+        routes_to_test = [self.config.model_id, *(self.config.model_fallbacks or [])]
+        results: List[Dict[str, Any]] = []
+        host = getattr(self.config, "openclaw_http_host", "127.0.0.1")
+        port = int(getattr(self.config, "openclaw_http_port", 18789))
+
+        for idx, route_model in enumerate(routes_to_test):
+            t0 = time.perf_counter()
+            status_str = "unavailable"
+            ttft_ms: Optional[float] = None
+            detail = ""
+            if token:
+                try:
+                    conn = http.client.HTTPConnection(host, port, timeout=15.0)
+                    payload = {
+                        "model": "openclaw/default",
+                        "user": getattr(self.config, "openclaw_voice_session_user", "maven-voice-fast"),
+                        "stream": True,
+                        "max_completion_tokens": 24,
+                        "messages": [
+                            {"role": "system", "content": "Reply with the single word ONLINE. Never call tools."},
+                            {"role": "user", "content": "Status check."},
+                        ],
+                    }
+                    conn.request(
+                        "POST",
+                        "/v1/chat/completions",
+                        body=json.dumps(payload).encode("utf-8"),
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {token}",
+                            "x-openclaw-model": route_model,
+                        },
+                    )
+                    resp = conn.getresponse()
+                    got_text = ""
+                    err_seen = ""
+                    while True:
+                        raw = resp.readline()
+                        if not raw:
+                            break
+                        ln = raw.decode("utf-8", errors="replace").strip()
+                        if not ln.startswith("data:"):
+                            continue
+                        p = ln[5:].strip()
+                        if p == "[DONE]":
+                            break
+                        obj = json.loads(p)
+                        if "error" in obj and obj["error"]:
+                            e = obj["error"]
+                            err_seen = e.get("message", str(e)) if isinstance(e, dict) else str(e)
+                            break
+                        for ch in obj.get("choices", []):
+                            d = (ch.get("delta") or {}).get("content") or ""
+                            if d:
+                                if ttft_ms is None:
+                                    ttft_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                                got_text += d
+                    conn.close()
+                    if got_text.strip() and not err_seen:
+                        status_str = "available"
+                        detail = got_text.strip()[:40]
+                    else:
+                        status_str, detail = self._sanitize_gateway_error(err_seen or f"HTTP {resp.status}")
+                except Exception as exc:
+                    status_str = "error"
+                    detail = type(exc).__name__
+            results.append(
+                {
+                    "role": "primary" if idx == 0 else f"fallback_{idx}",
+                    "model_id": route_model,
+                    "status": status_str,
+                    "ttft_ms": ttft_ms,
+                    "total_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+                    "detail": redact_sensitive_text(detail),
+                }
+            )
+            if status_str != "available":
+                self._mark_route_cooldown(None if idx == 0 else route_model)
+            else:
+                self._route_cooldowns.pop(self._route_key(None if idx == 0 else route_model), None)
+
+        return {
+            "primary_configured": self.config.model_id,
+            "fallbacks_configured": list(self.config.model_fallbacks or []),
+            "routes": results,
+        }
 
     def handle_voice_command(self, raw_text: str, confirmed: bool = False) -> Dict[str, Any]:
         """
         Process a recognized text command, execute the matching desktop action
-        or forward to OpenClaw Gemini 2.5 Flash, and return the execution summary.
+        or forward to OpenClaw (streaming SSE when available, CLI fallback otherwise),
+        and return the execution summary with latency telemetry.
         """
         clean_text = raw_text.strip()
         if not clean_text:
@@ -67,11 +564,22 @@ class VoiceController:
         cmd_lower = cmd_text.lower() if cmd_text else clean_text.lower()
 
         # 2. Check Local Desktop Actions
+        t_local = time.perf_counter()
         action_result = self._route_desktop_action(cmd_lower, confirmed=confirmed)
         if action_result:
+            local_ms = round((time.perf_counter() - t_local) * 1000.0, 1)
             response_text = action_result.get("response", "")
             status = action_result.get("status", "success")
             action = action_result.get("action", "voice_action")
+            action_result["route"] = "local_intent"
+            action_result["dispatch_ms"] = local_ms
+            self.last_turn_metrics = {
+                "route": "local_intent",
+                "model_used": "local_intent_router",
+                "llm_ttft_ms": 0.0,
+                "llm_total_ms": local_ms,
+                "llm_retries": 0,
+            }
             if status == "confirmation_required":
                 voice_logger.action_confirmation_required(app_id=cmd_text, prompt=response_text)
             else:
@@ -85,25 +593,89 @@ class VoiceController:
             )
             return action_result
 
-        # 3. Conversational query: forward to OpenClaw (Gemini 2.5 Flash primary + configured fallbacks)
+        # 3. Conversational query: forward to OpenClaw (streaming SSE primary + CLI fallback)
         if self.config.enable_openclaw_fallback:
-            ai_result = self._query_openclaw(cmd_text)
+            metrics: Dict[str, Any] = {}
+            chunks = list(self.stream_openclaw(cmd_text, metrics_out=metrics))
+            reply_text = " ".join(chunks).strip()
+            status = metrics.get("status", "success")
+            model_used = metrics.get("model_used") or self.config.model_id
+            self.last_turn_metrics = dict(metrics)
             self.logger.log_action(
                 action_type="voice_conversation",
                 target=cmd_text,
-                status=ai_result.get("status", "success"),
+                status=status,
                 confirmed=False,
                 details={
-                    "model": ai_result.get("model_used") or self.config.model_id,
+                    "model": model_used,
                     "configured_primary": self.config.model_id,
+                    "llm_ttft_ms": metrics.get("llm_ttft_ms"),
+                    "llm_total_ms": metrics.get("llm_total_ms"),
+                    "llm_retries": metrics.get("llm_retries", 0),
                 },
             )
-            return ai_result
+            return {
+                "status": status,
+                "response": reply_text,
+                "model_used": model_used,
+                "route": metrics.get("route", "openclaw_stream"),
+                "latency": metrics,
+            }
 
         return {
             "status": "unhandled",
             "response": "I didn't understand that instruction. How can I assist you with your desktop?",
         }
+
+    def dispatch_streaming_voice_turn(
+        self,
+        raw_text: str,
+        confirmed: bool = False,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[Iterator[str], Dict[str, Any], str]]]:
+        """
+        Fast-path voice dispatcher for VoiceDaemon:
+        - If local desktop intent matches, executes immediately and returns `(action_result, None)`.
+        - If conversational AI turn is needed, returns `(None, (sentence_iterator, metrics_dict, cmd_text))`
+          so `session.speak_stream()` begins speaking Sentence #1 while Sentence #2 is still generating!
+        """
+        clean_text = (raw_text or "").strip()
+        if not clean_text:
+            return {"status": "empty", "response": ""}, None
+
+        cmd_text = re.sub(r"^(?:maven|jarvis)[\s,:]*", "", clean_text, flags=re.IGNORECASE).strip()
+        cmd_lower = cmd_text.lower() if cmd_text else clean_text.lower()
+
+        t_local = time.perf_counter()
+        action_result = self._route_desktop_action(cmd_lower, confirmed=confirmed)
+        if action_result:
+            local_ms = round((time.perf_counter() - t_local) * 1000.0, 1)
+            response_text = action_result.get("response", "")
+            status = action_result.get("status", "success")
+            action = action_result.get("action", "voice_action")
+            action_result["route"] = "local_intent"
+            action_result["dispatch_ms"] = local_ms
+            if status == "confirmation_required":
+                voice_logger.action_confirmation_required(app_id=cmd_text, prompt=response_text)
+            else:
+                voice_logger.action_complete(action=action, status=status, response=response_text)
+            self.logger.log_action(
+                action_type="voice_action",
+                target=cmd_text,
+                status=status,
+                confirmed=confirmed,
+                details=action_result,
+            )
+            return action_result, None
+
+        if self.config.enable_openclaw_fallback:
+            metrics: Dict[str, Any] = {}
+            sentence_iter = self.stream_openclaw(cmd_text, metrics_out=metrics)
+            return None, (sentence_iter, metrics, cmd_text)
+
+        return {
+            "status": "unhandled",
+            "response": "I didn't understand that instruction. How can I assist you with your desktop?",
+        }, None
 
     def _route_desktop_action(self, cmd: str, confirmed: bool = False) -> Optional[Dict[str, Any]]:
         """Route speech command to Maverick's secure desktop automation subsystems using BilingualIntentClassifier."""

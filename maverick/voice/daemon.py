@@ -3,13 +3,15 @@
 import os
 import signal
 import sys
+import threading
 import time
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from maverick.voice.config import VoiceConfig
 from maverick.voice.controller import VoiceController
 from maverick.voice.observability import voice_logger
 from maverick.voice.session import VoiceSession, VoiceState
+from maverick.voice.tts import detect_speech_language
 
 
 def _get_process_rss_mb() -> float:
@@ -97,6 +99,14 @@ class VoiceDaemon:
             channels=self.config.channels,
         )
 
+        # Pre-warm OpenClaw voice session in background so Turn #1 avoids cold MCP bundle init
+        if hasattr(self.controller, "warm_gateway_session"):
+            threading.Thread(
+                target=self.controller.warm_gateway_session,
+                name="maven-openclaw-warmup",
+                daemon=True,
+            ).start()
+
         last_cpu_time = time.time()
         last_cpu_ticks = 0
         cpu_pct = 0.0
@@ -126,8 +136,11 @@ class VoiceDaemon:
                     utterance = self.session.step()
 
                     if utterance:
+                        t_turn_start = time.perf_counter()
+                        wake_ms = float(getattr(self.session.wake_detector, "last_wake_ms", 0.0) or 0.0)
+
                         # Speech-to-Text invocation
-                        t_stt = time.time()
+                        t_stt = time.perf_counter()
                         voice_logger.stt_start(len(utterance))
 
                         try:
@@ -137,7 +150,9 @@ class VoiceDaemon:
                             self.session.rearm()
                             continue
 
-                        duration_stt = time.time() - t_stt
+                        duration_stt = time.perf_counter() - t_stt
+                        stt_ms = round(duration_stt * 1000.0, 1)
+                        stt_backend = str(getattr(self.controller.stt, "last_backend", "whisper_cli"))
 
                         if not transcript or not transcript.strip():
                             voice_logger.stt_empty(duration_stt, reason="silence_or_ambient_noise")
@@ -146,20 +161,109 @@ class VoiceDaemon:
 
                         voice_logger.stt_complete(transcript.strip(), duration_stt)
 
-                        # Intent Dispatch and Action Execution
-                        res = self.controller.handle_voice_command(transcript)
-                        response_text = res.get("response", "")
+                        # Intent Dispatch & Streaming Sentence-Chunked Execution
+                        t_post_stt = time.perf_counter()
+                        ttfa_box: Dict[str, Optional[float]] = {"ms": None}
 
-                        # Verbal Feedback
-                        if response_text:
-                            active_eng = "elevenlabs"
-                            if hasattr(self.session.tts, "get_status"):
-                                active_eng = self.session.tts.get_status().get("active_engine", "elevenlabs")
-                            voice_logger.tts_start(response_text, engine=active_eng)
-                            t_tts = time.time()
-                            self.session.speak(response_text, wait=True)
-                            used_eng = getattr(self.session.tts, "last_used_engine", active_eng)
-                            voice_logger.tts_complete(time.time() - t_tts, engine=used_eng)
+                        def _mark_first_audio() -> None:
+                            if ttfa_box["ms"] is None:
+                                ttfa_box["ms"] = round((time.perf_counter() - t_turn_start) * 1000.0, 1)
+
+                        local_res, stream_bundle = self.controller.dispatch_streaming_voice_turn(transcript)
+
+                        active_eng = "elevenlabs"
+                        if hasattr(self.session.tts, "get_status"):
+                            active_eng = self.session.tts.get_status().get("active_engine", "elevenlabs")
+
+                        if local_res is not None:
+                            response_text = local_res.get("response", "")
+                            tts_ttfb_ms = 0.0
+                            tts_play_ms = 0.0
+                            dns_ms = 0.0
+                            tls_ms = 0.0
+                            used_eng = active_eng
+                            if response_text:
+                                voice_logger.tts_start(response_text, engine=active_eng)
+                                tts_stats = self.session.speak_stream([response_text], on_first_audio=_mark_first_audio)
+                                used_eng = str(tts_stats.get("engine") or getattr(self.session.tts, "last_used_engine", active_eng))
+                                tts_ttfb_ms = float(tts_stats.get("tts_ttfb_ms") or 0.0)
+                                tts_play_ms = float(tts_stats.get("tts_playback_ms") or 0.0)
+                                dns_ms = float(tts_stats.get("dns_ms") or 0.0)
+                                tls_ms = float(tts_stats.get("tls_ms") or 0.0)
+                                voice_logger.tts_complete(tts_play_ms / 1000.0, engine=used_eng)
+
+                            total_turn_ms = round((time.perf_counter() - t_turn_start) * 1000.0, 1)
+                            voice_logger.pipeline_latency(
+                                {
+                                    "route": "local_intent",
+                                    "lang": detect_speech_language(response_text or transcript),
+                                    "model_used": "local_intent_router",
+                                    "stt_backend": stt_backend,
+                                    "tts_engine": used_eng,
+                                    "wake_ms": wake_ms,
+                                    "stt_ms": stt_ms,
+                                    "network_dns_ms": dns_ms,
+                                    "network_tls_ms": tls_ms,
+                                    "gateway_queue_ms": 0.0,
+                                    "llm_ttft_ms": 0.0,
+                                    "llm_first_sentence_ms": 0.0,
+                                    "llm_total_ms": float(local_res.get("dispatch_ms") or 0.0),
+                                    "llm_retries": 0,
+                                    "tts_ttfb_ms": tts_ttfb_ms,
+                                    "tts_playback_ms": tts_play_ms,
+                                    "tts_chunks": 1 if response_text else 0,
+                                    "ttfa_ms": ttfa_box["ms"] or total_turn_ms,
+                                    "total_turn_ms": total_turn_ms,
+                                }
+                            )
+                        elif stream_bundle is not None:
+                            sent_iter, ai_metrics, cmd_text = stream_bundle
+                            tts_stats = self.session.speak_stream(sent_iter, on_first_audio=_mark_first_audio)
+                            full_spoken = str(tts_stats.get("full_text") or ai_metrics.get("full_response") or "").strip()
+                            used_eng = str(tts_stats.get("engine") or getattr(self.session.tts, "last_used_engine", active_eng))
+                            if full_spoken:
+                                voice_logger.tts_start(full_spoken, engine=used_eng)
+                                voice_logger.tts_complete(float(tts_stats.get("tts_playback_ms") or 0.0) / 1000.0, engine=used_eng)
+
+                            model_used = str(ai_metrics.get("model_used") or self.config.model_id)
+                            ai_status = str(ai_metrics.get("status") or "success")
+                            self.controller.logger.log_action(
+                                action_type="voice_conversation",
+                                target=cmd_text,
+                                status=ai_status,
+                                confirmed=False,
+                                details={
+                                    "model": model_used,
+                                    "configured_primary": self.config.model_id,
+                                    "llm_ttft_ms": ai_metrics.get("llm_ttft_ms"),
+                                    "llm_total_ms": ai_metrics.get("llm_total_ms"),
+                                    "llm_retries": ai_metrics.get("llm_retries", 0),
+                                },
+                            )
+                            total_turn_ms = round((time.perf_counter() - t_turn_start) * 1000.0, 1)
+                            voice_logger.pipeline_latency(
+                                {
+                                    "route": str(ai_metrics.get("route") or "openclaw_stream"),
+                                    "lang": str(ai_metrics.get("lang") or detect_speech_language(full_spoken or transcript)),
+                                    "model_used": model_used,
+                                    "stt_backend": stt_backend,
+                                    "tts_engine": used_eng,
+                                    "wake_ms": wake_ms,
+                                    "stt_ms": stt_ms,
+                                    "network_dns_ms": float(tts_stats.get("dns_ms") or 0.0),
+                                    "network_tls_ms": float(tts_stats.get("tls_ms") or 0.0),
+                                    "gateway_queue_ms": float(ai_metrics.get("gateway_queue_ms") or 0.0),
+                                    "llm_ttft_ms": float(ai_metrics.get("llm_ttft_ms") or 0.0),
+                                    "llm_first_sentence_ms": float(ai_metrics.get("llm_first_sentence_ms") or 0.0),
+                                    "llm_total_ms": float(ai_metrics.get("llm_total_ms") or 0.0),
+                                    "llm_retries": int(ai_metrics.get("llm_retries") or 0),
+                                    "tts_ttfb_ms": float(tts_stats.get("tts_ttfb_ms") or 0.0),
+                                    "tts_playback_ms": float(tts_stats.get("tts_playback_ms") or 0.0),
+                                    "tts_chunks": int(tts_stats.get("chunks") or 0),
+                                    "ttfa_ms": ttfa_box["ms"] or round((time.perf_counter() - t_post_stt) * 1000.0 + stt_ms, 1),
+                                    "total_turn_ms": total_turn_ms,
+                                }
+                            )
 
                         # Re-arm continuous listening and flush microphone pipe
                         if hasattr(self.session.audio, "flush"):
