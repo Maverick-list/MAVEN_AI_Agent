@@ -11,6 +11,10 @@ from maverick.desktop.launcher import (
     list_all_apps_status,
     launch_app,
 )
+from maverick.desktop.awareness import (
+    get_running_authorized_apps,
+    get_active_application_context,
+)
 from maverick.media.spotify import (
     SpotifyController,
     SpotifyControllerError,
@@ -24,6 +28,16 @@ from maverick.browser.navigation import NavigationError
 from maverick.browser.page import PageInspectorError
 from maverick.browser.interaction import InteractionError
 from maverick.browser.cdp import CDPError
+from maverick.system.monitor import (
+    get_system_summary,
+    get_system_resources,
+    get_battery_status,
+)
+from maverick.notifications.manager import NotificationManager
+from maverick.activity.logger import ActivityLogger
+from maverick.context.engine import ContextEngine
+
+_logger = ActivityLogger()
 
 
 def output_result(data: Dict[str, Any], pretty: bool = False, exit_code: int = 0) -> None:
@@ -34,8 +48,8 @@ def output_result(data: Dict[str, Any], pretty: bool = False, exit_code: int = 0
 
 
 def handle_app_commands(args: argparse.Namespace) -> None:
-    """Handle 'app' subcommands."""
-    sub = args.app_subcommand
+    """Handle 'app' and 'apps' subcommands."""
+    sub = getattr(args, "app_subcommand", None) or getattr(args, "apps_subcommand", None)
 
     if sub == "list":
         apps = list_all_apps_status()
@@ -45,6 +59,31 @@ def handle_app_commands(args: argparse.Namespace) -> None:
                 "action": "list_apps",
                 "count": len(apps),
                 "apps": apps,
+            },
+            pretty=args.pretty,
+            exit_code=0,
+        )
+
+    elif sub == "running":
+        running = get_running_authorized_apps()
+        output_result(
+            {
+                "status": "success",
+                "action": "running_apps",
+                "count": len(running),
+                "apps": running,
+            },
+            pretty=args.pretty,
+            exit_code=0,
+        )
+
+    elif sub == "active":
+        active_ctx = get_active_application_context()
+        output_result(
+            {
+                "status": "success",
+                "action": "active_app_context",
+                "context": active_ctx,
             },
             pretty=args.pretty,
             exit_code=0,
@@ -81,9 +120,11 @@ def handle_app_commands(args: argparse.Namespace) -> None:
                 confirmed=args.confirmed,
             )
             exit_code = 0 if res.get("status") == "success" else 1
+            _logger.log_action("app_launch", args.app_id, res.get("status", "unknown"), args.confirmed, {"args": args.args})
             output_result(res, pretty=args.pretty, exit_code=exit_code)
 
         except ConfirmationRequiredError as conf_err:
+            _logger.log_action("app_launch", conf_err.target, "confirmation_required", False, {"reason": conf_err.reason})
             output_result(
                 {
                     "status": "confirmation_required",
@@ -98,6 +139,7 @@ def handle_app_commands(args: argparse.Namespace) -> None:
             )
 
         except SecurityError as sec_err:
+            _logger.log_action("app_launch", getattr(args, "app_id", "unknown"), "security_violation", False, {"error": str(sec_err)})
             output_result(
                 {
                     "status": "error",
@@ -135,34 +177,42 @@ def handle_spotify_commands(args: argparse.Namespace) -> None:
 
         elif sub == "play":
             res = ctl.play()
+            _logger.log_action("spotify_control", "play", "success", False, {"player": target_player})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "pause":
             res = ctl.pause()
+            _logger.log_action("spotify_control", "pause", "success", False, {"player": target_player})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "toggle":
             res = ctl.play_pause()
+            _logger.log_action("spotify_control", "toggle", "success", False, {"player": target_player})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "next":
             res = ctl.next_track()
+            _logger.log_action("spotify_control", "next", "success", False, {"player": target_player})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "prev" or sub == "previous":
             res = ctl.previous_track()
+            _logger.log_action("spotify_control", "prev", "success", False, {"player": target_player})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "stop":
             res = ctl.stop()
+            _logger.log_action("spotify_control", "stop", "success", False, {"player": target_player})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "volume":
             res = ctl.set_volume(args.level)
+            _logger.log_action("spotify_control", "volume", "success", False, {"level": args.level})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "open-uri":
             res = ctl.open_uri(args.uri)
+            _logger.log_action("spotify_control", "open-uri", "success", False, {"uri": args.uri})
             output_result(res, pretty=args.pretty, exit_code=0)
 
     except PlayerNotRunningError as pnr_err:
@@ -213,10 +263,12 @@ def handle_browser_commands(args: argparse.Namespace) -> None:
 
         elif sub == "start":
             res = client.start(headless=args.headless, open_url=args.url)
+            _logger.log_action("browser_start", "chrome", res.get("status", "unknown"), False)
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "stop":
             res = client.stop()
+            _logger.log_action("browser_stop", "chrome", "success", False)
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "tabs":
@@ -234,10 +286,12 @@ def handle_browser_commands(args: argparse.Namespace) -> None:
 
         elif sub == "open":
             res = client.open_tab(url=args.url)
+            _logger.log_action("browser_open_tab", args.url, "success", False)
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "close-tab":
             res = client.close_tab(tab_id=args.tab)
+            _logger.log_action("browser_close_tab", str(args.tab), "success", False)
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "activate-tab":
@@ -246,6 +300,7 @@ def handle_browser_commands(args: argparse.Namespace) -> None:
 
         elif sub == "navigate":
             res = client.navigate(url=args.url, tab_id=args.tab)
+            _logger.log_action("browser_navigate", args.url, "success", False)
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "reload":
@@ -266,14 +321,17 @@ def handle_browser_commands(args: argparse.Namespace) -> None:
 
         elif sub == "screenshot":
             res = client.screenshot(output_path=args.output, tab_id=args.tab)
+            _logger.log_action("browser_screenshot", res.get("file_path", ""), "success", False)
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "click":
             res = client.click(selector=args.selector, tab_id=args.tab, confirmed=args.confirmed)
+            _logger.log_action("browser_click", args.selector, "success", args.confirmed)
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "fill":
             res = client.fill(selector=args.selector, value=args.value, tab_id=args.tab, confirmed=args.confirmed)
+            _logger.log_action("browser_fill", args.selector, "success", args.confirmed, {"chars": len(args.value)})
             output_result(res, pretty=args.pretty, exit_code=0)
 
         elif sub == "scroll":
@@ -281,6 +339,7 @@ def handle_browser_commands(args: argparse.Namespace) -> None:
             output_result(res, pretty=args.pretty, exit_code=0)
 
     except ConfirmationRequiredError as conf_err:
+        _logger.log_action("browser_action", conf_err.target, "confirmation_required", False, {"action": conf_err.action})
         output_result(
             {
                 "status": "confirmation_required",
@@ -295,6 +354,7 @@ def handle_browser_commands(args: argparse.Namespace) -> None:
         )
 
     except (BrowserSecurityError, SecurityError) as sec_err:
+        _logger.log_action("browser_security", "violation", "error", False, {"error": str(sec_err)})
         output_result(
             {
                 "status": "error",
@@ -324,9 +384,74 @@ def handle_browser_commands(args: argparse.Namespace) -> None:
         )
 
 
+def handle_system_commands(args: argparse.Namespace) -> None:
+    """Handle 'system' subcommands."""
+    sub = args.system_subcommand
+
+    if sub == "status":
+        res = get_system_summary()
+        output_result(res, pretty=args.pretty, exit_code=0)
+
+    elif sub == "resources":
+        res = get_system_resources()
+        output_result({"status": "success", "resources": res}, pretty=args.pretty, exit_code=0)
+
+    elif sub == "battery":
+        res = get_battery_status()
+        output_result({"status": "success", "battery": res}, pretty=args.pretty, exit_code=0)
+
+
+def handle_notification_commands(args: argparse.Namespace) -> None:
+    """Handle 'notifications' subcommands."""
+    sub = args.notifications_subcommand
+    nm = NotificationManager()
+
+    if sub == "status":
+        res = nm.get_status()
+        output_result(res, pretty=args.pretty, exit_code=0)
+
+    elif sub == "send":
+        res = nm.send_notification(
+            title=args.title,
+            body=args.body or "",
+            urgency=args.urgency,
+            category=args.category,
+        )
+        _logger.log_action("notification_sent", args.title, res.get("status", "unknown"), False, {"category": args.category})
+        output_result(res, pretty=args.pretty, exit_code=0)
+
+
+def handle_context_command(args: argparse.Namespace) -> None:
+    """Handle 'context' command."""
+    ce = ContextEngine()
+    ctx = ce.get_context()
+    output_result(ctx, pretty=args.pretty, exit_code=0)
+
+
+def handle_activity_commands(args: argparse.Namespace) -> None:
+    """Handle 'activity' subcommands."""
+    sub = args.activity_subcommand
+
+    if sub == "recent":
+        records = _logger.get_recent_activity(limit=args.limit)
+        output_result(
+            {
+                "status": "success",
+                "action": "recent_activity",
+                "count": len(records),
+                "records": records,
+            },
+            pretty=args.pretty,
+            exit_code=0,
+        )
+
+    elif sub == "clear":
+        res = _logger.clear()
+        output_result(res, pretty=args.pretty, exit_code=0)
+
+
 def main() -> None:
     """Main CLI entry point."""
-    # Base parser for shared options like --pretty
     base_parser = argparse.ArgumentParser(add_help=False)
     base_parser.add_argument(
         "--pretty",
@@ -336,7 +461,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="maverick-ctl",
-        description="Maverick DevOS Desktop Launcher, Spotify & Browser Controller",
+        description="Maverick DevOS Desktop Intelligence & Controller",
         parents=[base_parser],
     )
 
@@ -345,30 +470,28 @@ def main() -> None:
     # 1. App command parser
     app_parser = subparsers.add_parser("app", help="Manage desktop applications", parents=[base_parser])
     app_subs = app_parser.add_subparsers(dest="app_subcommand", required=True)
-
     app_subs.add_parser("list", help="List all authorized desktop applications", parents=[base_parser])
-    
+    app_subs.add_parser("running", help="List running authorized applications", parents=[base_parser])
+    app_subs.add_parser("active", help="Get active application context", parents=[base_parser])
+
     app_status_parser = app_subs.add_parser("status", help="Check status of an application", parents=[base_parser])
     app_status_parser.add_argument("app_id", help="Authorized application ID")
 
     app_launch_parser = app_subs.add_parser("launch", help="Launch an authorized application", parents=[base_parser])
     app_launch_parser.add_argument("app_id", help="Authorized application ID")
     app_launch_parser.add_argument("--args", nargs="*", default=None, help="Optional arguments for the app")
-    app_launch_parser.add_argument(
-        "--confirmed",
-        action="store_true",
-        help="Explicitly confirm consequential launches (required for browsers, terminals)",
-    )
+    app_launch_parser.add_argument("--confirmed", action="store_true", help="Confirm consequential launches")
 
-    # Base parser for spotify options like --player
-    spotify_base = argparse.ArgumentParser(add_help=False, parents=[base_parser])
-    spotify_base.add_argument(
-        "--player",
-        default=None,
-        help="Specific MPRIS destination (defaults to org.mpris.MediaPlayer2.spotify)",
-    )
+    # Apps alias (plural)
+    apps_parser = subparsers.add_parser("apps", help="Alias for 'app' command", parents=[base_parser])
+    apps_subs = apps_parser.add_subparsers(dest="apps_subcommand", required=True)
+    apps_subs.add_parser("running", help="List running authorized applications", parents=[base_parser])
+    apps_subs.add_parser("active", help="Get active application context", parents=[base_parser])
+    apps_subs.add_parser("list", help="List all authorized desktop applications", parents=[base_parser])
 
     # 2. Spotify command parser
+    spotify_base = argparse.ArgumentParser(add_help=False, parents=[base_parser])
+    spotify_base.add_argument("--player", default=None, help="Specific MPRIS destination")
     spotify_parser = subparsers.add_parser("spotify", help="Control Spotify and MPRIS media players", parents=[spotify_base])
     spotify_subs = spotify_parser.add_subparsers(dest="spotify_subcommand", required=True)
 
@@ -383,74 +506,91 @@ def main() -> None:
 
     vol_parser = spotify_subs.add_parser("volume", help="Set player volume", parents=[spotify_base])
     vol_parser.add_argument("level", type=float, help="Volume level (0.0 - 1.0 or 0 - 100)")
-
     uri_parser = spotify_subs.add_parser("open-uri", help="Open Spotify URI or track URL", parents=[spotify_base])
     uri_parser.add_argument("uri", help="Spotify track/album/playlist URI")
 
-    # Base parser for browser options like --tab
-    browser_base = argparse.ArgumentParser(add_help=False, parents=[base_parser])
-    browser_base.add_argument(
-        "--tab",
-        default=None,
-        help="Target tab ID (defaults to first/active page tab)",
-    )
-
     # 3. Browser command parser
+    browser_base = argparse.ArgumentParser(add_help=False, parents=[base_parser])
+    browser_base.add_argument("--tab", default=None, help="Target tab ID")
     browser_parser = subparsers.add_parser("browser", help="Control Chrome automation browser via CDP", parents=[browser_base])
     browser_subs = browser_parser.add_subparsers(dest="browser_subcommand", required=True)
 
     browser_subs.add_parser("status", help="Check browser automation and CDP status", parents=[browser_base])
-    
     start_parser = browser_subs.add_parser("start", help="Launch isolated Chrome automation session", parents=[browser_base])
     start_parser.add_argument("--headless", action="store_true", help="Launch in headless mode")
     start_parser.add_argument("--url", default=None, help="Initial URL to open")
-
     browser_subs.add_parser("stop", help="Gracefully stop Chrome automation session", parents=[browser_base])
     browser_subs.add_parser("tabs", help="List open browser tabs", parents=[browser_base])
 
     open_parser = browser_subs.add_parser("open", help="Open a new tab", parents=[browser_base])
-    open_parser.add_argument("url", nargs="?", default="about:blank", help="URL to open (defaults to about:blank)")
-
+    open_parser.add_argument("url", nargs="?", default="about:blank", help="URL to open")
     browser_subs.add_parser("close-tab", help="Close the target tab", parents=[browser_base])
-
     act_parser = browser_subs.add_parser("activate-tab", help="Focus the target tab", parents=[browser_base])
     act_parser.add_argument("tab_id", help="Tab ID to activate")
-
     nav_parser = browser_subs.add_parser("navigate", help="Navigate target tab to a URL", parents=[browser_base])
     nav_parser.add_argument("url", help="Target URL (http/https/about:blank)")
-
     reload_parser = browser_subs.add_parser("reload", help="Reload the target tab", parents=[browser_base])
     reload_parser.add_argument("--ignore-cache", action="store_true", help="Bypass browser cache")
-
     browser_subs.add_parser("back", help="Navigate backward in history", parents=[browser_base])
     browser_subs.add_parser("forward", help="Navigate forward in history", parents=[browser_base])
-
     browser_subs.add_parser("inspect", help="Inspect visible text, title, and metadata", parents=[browser_base])
 
     shot_parser = browser_subs.add_parser("screenshot", help="Capture tab screenshot", parents=[browser_base])
     shot_parser.add_argument("--output", default=None, help="Destination PNG file path")
-
     click_parser = browser_subs.add_parser("click", help="Click an element by CSS selector", parents=[browser_base])
     click_parser.add_argument("selector", help="CSS selector of element to click")
     click_parser.add_argument("--confirmed", action="store_true", help="Confirm consequential interactions")
-
     fill_parser = browser_subs.add_parser("fill", help="Fill text into an element", parents=[browser_base])
     fill_parser.add_argument("selector", help="CSS selector of input/textarea")
     fill_parser.add_argument("value", help="Text to fill")
     fill_parser.add_argument("--confirmed", action="store_true", help="Confirm consequential interactions")
+    scroll_parser = browser_subs.add_parser("scroll", help="Scroll page", parents=[browser_base])
+    scroll_parser.add_argument("--direction", default="down", choices=["up", "down", "top", "bottom"])
+    scroll_parser.add_argument("--amount", type=int, default=500)
 
-    scroll_parser = browser_subs.add_parser("scroll", help="Scroll page up, down, top, or bottom", parents=[browser_base])
-    scroll_parser.add_argument("--direction", default="down", choices=["up", "down", "top", "bottom"], help="Scroll direction")
-    scroll_parser.add_argument("--amount", type=int, default=500, help="Scroll pixels (default 500)")
+    # 4. System command parser
+    system_parser = subparsers.add_parser("system", help="Monitor system resources, battery, and telemetry", parents=[base_parser])
+    system_subs = system_parser.add_subparsers(dest="system_subcommand", required=True)
+    system_subs.add_parser("status", help="Get comprehensive system summary", parents=[base_parser])
+    system_subs.add_parser("resources", help="Get CPU, RAM, and Disk metrics", parents=[base_parser])
+    system_subs.add_parser("battery", help="Get battery and charging status", parents=[base_parser])
+
+    # 5. Notifications command parser
+    notif_parser = subparsers.add_parser("notifications", help="Desktop notification manager", parents=[base_parser])
+    notif_subs = notif_parser.add_subparsers(dest="notifications_subcommand", required=True)
+    notif_subs.add_parser("status", help="Check notification service status", parents=[base_parser])
+    send_notif = notif_subs.add_parser("send", help="Send a safe desktop notification", parents=[base_parser])
+    send_notif.add_argument("title", help="Notification title")
+    send_notif.add_argument("body", nargs="?", default="", help="Notification body text")
+    send_notif.add_argument("--urgency", default="normal", choices=["low", "normal", "critical"])
+    send_notif.add_argument("--category", default="system", choices=list(nm_categories := ["system", "media", "browser", "task", "alert", "social"]))
+
+    # 6. Context command parser
+    subparsers.add_parser("context", help="Get unified structured context snapshot for Maven JARVIS", parents=[base_parser])
+
+    # 7. Activity command parser
+    activity_parser = subparsers.add_parser("activity", help="Inspect and manage auditable activity logs", parents=[base_parser])
+    activity_subs = activity_parser.add_subparsers(dest="activity_subcommand", required=True)
+    recent_act = activity_subs.add_parser("recent", help="Show recent Maven actions", parents=[base_parser])
+    recent_act.add_argument("--limit", type=int, default=10, help="Number of records to show")
+    activity_subs.add_parser("clear", help="Clear Maven's activity log file", parents=[base_parser])
 
     args = parser.parse_args()
 
-    if args.command == "app":
+    if args.command in ("app", "apps"):
         handle_app_commands(args)
     elif args.command == "spotify":
         handle_spotify_commands(args)
     elif args.command == "browser":
         handle_browser_commands(args)
+    elif args.command == "system":
+        handle_system_commands(args)
+    elif args.command == "notifications":
+        handle_notification_commands(args)
+    elif args.command == "context":
+        handle_context_command(args)
+    elif args.command == "activity":
+        handle_activity_commands(args)
 
 
 if __name__ == "__main__":
