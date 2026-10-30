@@ -450,6 +450,61 @@ def handle_activity_commands(args: argparse.Namespace) -> None:
         output_result(res, pretty=args.pretty, exit_code=0)
 
 
+def handle_voice_commands(args: argparse.Namespace) -> None:
+    """Handle 'voice' subcommands."""
+    import shutil
+    from maverick.voice.audio import list_audio_devices
+    from maverick.voice.config import VoiceConfig
+    from maverick.voice.controller import VoiceController
+    from maverick.voice.tts import SpeechDispatcherTTS
+    from maverick.voice.ui import VoiceUI
+
+    sub = args.voice_subcommand
+
+    if sub == "status":
+        devs = list_audio_devices()
+        cfg = VoiceConfig()
+        output_result(
+            {
+                "status": "success",
+                "audio_devices": devs,
+                "tts": {
+                    "engine": cfg.tts_engine,
+                    "voice": cfg.tts_voice,
+                    "available": shutil.which("spd-say") is not None,
+                },
+                "wake_words": cfg.wake_words,
+                "listening_timeout_seconds": cfg.listening_timeout_seconds,
+                "model_id": cfg.model_id,
+            },
+            pretty=args.pretty,
+            exit_code=0,
+        )
+
+    elif sub == "speak":
+        tts = SpeechDispatcherTTS()
+        ok = tts.speak(args.text, wait=True)
+        output_result(
+            {
+                "status": "success" if ok else "error",
+                "action": "speak",
+                "text": args.text,
+            },
+            pretty=args.pretty,
+            exit_code=0 if ok else 1,
+        )
+
+    elif sub == "command":
+        ctl = VoiceController()
+        res = ctl.handle_voice_command(args.text, confirmed=args.confirmed)
+        exit_code = 2 if res.get("status") == "confirmation_required" else (0 if res.get("status") in ("success", "empty") else 1)
+        output_result(res, pretty=args.pretty, exit_code=exit_code)
+
+    elif sub in ("listen", "ui"):
+        ui = VoiceUI()
+        ui.run()
+
+
 def main() -> None:
     """Main CLI entry point."""
     base_parser = argparse.ArgumentParser(add_help=False)
@@ -575,6 +630,21 @@ def main() -> None:
     recent_act.add_argument("--limit", type=int, default=10, help="Number of records to show")
     activity_subs.add_parser("clear", help="Clear Maven's activity log file", parents=[base_parser])
 
+    # 8. Voice command parser
+    voice_parser = subparsers.add_parser("voice", help="Voice interaction layer and speech synthesis", parents=[base_parser])
+    voice_subs = voice_parser.add_subparsers(dest="voice_subcommand", required=True)
+    voice_subs.add_parser("status", help="Check microphone, speaker, and TTS subsystem status", parents=[base_parser])
+    
+    speak_parser = voice_subs.add_parser("speak", help="Synthesize and speak text via local TTS", parents=[base_parser])
+    speak_parser.add_argument("text", help="Text to speak")
+
+    cmd_parser = voice_subs.add_parser("command", help="Execute a voice command via router", parents=[base_parser])
+    cmd_parser.add_argument("text", help="Voice command transcript")
+    cmd_parser.add_argument("--confirmed", action="store_true", help="Confirm consequential actions")
+
+    voice_subs.add_parser("listen", help="Launch interactive voice session UI", parents=[base_parser])
+    voice_subs.add_parser("ui", help="Launch interactive voice session UI", parents=[base_parser])
+
     args = parser.parse_args()
 
     if args.command in ("app", "apps"):
@@ -591,6 +661,8 @@ def main() -> None:
         handle_context_command(args)
     elif args.command == "activity":
         handle_activity_commands(args)
+    elif args.command == "voice":
+        handle_voice_commands(args)
 
 
 if __name__ == "__main__":
