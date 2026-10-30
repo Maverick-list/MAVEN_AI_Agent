@@ -8,6 +8,7 @@ import numpy as np
 
 from maverick.voice.audio import calculate_rms
 from maverick.voice.config import VoiceConfig
+from maverick.voice.observability import voice_logger
 from maverick.voice.stt import STTProvider, WhisperCppSTTProvider
 
 
@@ -79,8 +80,10 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self.wake_words = [w.strip().lower() for w in self.config.wake_words]
         self._last_trigger_time = 0.0
         self._last_check_time = 0.0
+        self._last_burst_time = 0.0
         self._failed_checks = 0
         self._noise_floor = 0.02
+        self._noise_floor_initialized = False
         self._ring_buffer = bytearray()
         # Maintain ~1.2 seconds of 16kHz 16-bit mono audio
         self._max_buffer_bytes = int(self.config.sample_rate * 1.2 * 2)
@@ -90,8 +93,10 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._ring_buffer.clear()
         self._last_trigger_time = 0.0
         self._last_check_time = 0.0
+        self._last_burst_time = 0.0
         self._failed_checks = 0
         self._noise_floor = 0.02
+        self._noise_floor_initialized = False
 
     def process_frame(self, frame_bytes: bytes) -> bool:
         """
@@ -118,20 +123,40 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
 
         rms = calculate_rms(frame_bytes)
 
-        # Adaptively track ambient noise floor during quiet periods
-        is_burst = rms > (self._noise_floor * 1.6 + 0.02)
+        # Adaptively track ambient noise floor using asymmetric tracking
+        if not self._noise_floor_initialized:
+            self._noise_floor = rms
+            self._noise_floor_initialized = True
+        else:
+            if rms < self._noise_floor:
+                self._noise_floor = 0.85 * self._noise_floor + 0.15 * rms
+            else:
+                self._noise_floor = 0.985 * self._noise_floor + 0.015 * rms
+
+        delta = rms - self._noise_floor
+        threshold_delta = max(0.06, self._noise_floor * 0.40)
+        is_burst = delta > threshold_delta
+
         if not is_burst:
-            self._noise_floor = 0.92 * self._noise_floor + 0.08 * rms
-            self._failed_checks = 0
+            if (now - self._last_burst_time) > 3.0:
+                self._failed_checks = 0
             return False
+
+        self._last_burst_time = now
+        voice_logger.vad_burst(rms, self._noise_floor, delta)
 
         # Stage 1: Fast VAD check - verify energy exceeds both absolute threshold and ambient floor
         if rms < self.config.speech_start_threshold_rms:
             return False
 
         # Adaptive cooldown check between acoustic verification passes
-        # Base cooldown is 0.4s; backs off to 0.8s on sustained non-wake bursts to protect CPU
-        required_cooldown = 0.8 if self._failed_checks >= 2 else 0.4
+        # Base cooldown is 0.4s; backs off to 1.2s and 2.5s on sustained non-wake bursts to protect CPU
+        if self._failed_checks >= 3:
+            required_cooldown = 2.5
+        elif self._failed_checks >= 1:
+            required_cooldown = 1.2
+        else:
+            required_cooldown = 0.4
         if (now - self._last_check_time) < required_cooldown:
             return False
 
@@ -144,6 +169,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         audio_snapshot = bytes(self._ring_buffer)
 
         # Pass 1: Sensitive candidate detection with contrastive proper-noun prompt
+        voice_logger.wake_candidate(len(audio_snapshot), self.PROMPT_PASS1, pass_num=1)
         t1 = self.stt.transcribe(
             audio_snapshot,
             language="en",
@@ -151,17 +177,20 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         )
 
         if not t1 or not self.WAKE_REGEX.search(t1):
+            voice_logger.wake_result(accepted=False, transcript=t1 or "", reason="pass1_no_match")
             self._failed_checks += 1
             return False
 
         # If high-confidence two-word wake phrase ("Hey Maven", "Hey Jarvis") is detected at prefix:
         if self.TWO_WORD_WAKE.search(t1):
+            voice_logger.wake_result(accepted=True, phrase=t1)
             self._last_trigger_time = now
             self._ring_buffer.clear()
             self._failed_checks = 0
             return True
 
         # Pass 2: Precision confirmation for single-word candidates against common phonetically overlapping words
+        voice_logger.wake_candidate(len(audio_snapshot), self.PROMPT_PASS2, pass_num=2)
         t2 = self.stt.transcribe(
             audio_snapshot,
             language="en",
@@ -169,9 +198,11 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         )
 
         if not self.verify_text_candidate(t1, t2):
+            voice_logger.wake_result(accepted=False, transcript=f"t1={t1}, t2={t2}", reason="rejected_distractor")
             self._failed_checks += 1
             return False
 
+        voice_logger.wake_result(accepted=True, phrase=t1)
         self._last_trigger_time = now
         self._ring_buffer.clear()
         self._failed_checks = 0

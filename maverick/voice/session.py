@@ -7,6 +7,7 @@ from typing import Callable, List, Optional
 
 from maverick.voice.audio import AudioCapture, calculate_rms
 from maverick.voice.config import VoiceConfig
+from maverick.voice.observability import voice_logger
 from maverick.voice.tts import TTSProvider, SpeechDispatcherTTS
 from maverick.voice.wakeword import (
     WakeWordDetector,
@@ -80,7 +81,10 @@ class VoiceSession:
         with self._lock:
             if self._state == new_state:
                 return
+            old_state = self._state
             self._state = new_state
+
+        voice_logger.state_transition(old_state.value, new_state.value)
 
         for cb in self._state_callbacks:
             try:
@@ -96,6 +100,7 @@ class VoiceSession:
 
     def interrupt(self) -> None:
         """Stop TTS speech and return session to IDLE immediately."""
+        voice_logger.tts_interrupted()
         self.tts.stop()
         self._transition_to(VoiceState.INTERRUPTED)
         time.sleep(0.05)
@@ -155,7 +160,11 @@ class VoiceSession:
             rms = calculate_rms(chunk)
             self._audio_buffer.extend(chunk)
 
-            if rms >= self.config.silence_threshold_rms:
+            # Adapt dynamic speech threshold relative to noise floor if available
+            floor = getattr(self.wake_detector, "_noise_floor", None) or 0.02
+            speech_threshold = max(self.config.silence_threshold_rms, floor + 0.035)
+
+            if rms >= speech_threshold:
                 self._last_speech_time = now
 
             # Check silence duration
@@ -167,6 +176,7 @@ class VoiceSession:
                 self._transition_to(VoiceState.PROCESSING)
                 utterance = bytes(self._audio_buffer)
                 self._audio_buffer.clear()
+                voice_logger.utterance_ready(len(utterance), total_elapsed, trigger="max_recording_limit")
                 return utterance
 
             # Utterance complete when silence threshold met after at least 0.5s recording
@@ -174,10 +184,12 @@ class VoiceSession:
                 self._transition_to(VoiceState.PROCESSING)
                 utterance = bytes(self._audio_buffer)
                 self._audio_buffer.clear()
+                voice_logger.utterance_ready(len(utterance), total_elapsed, trigger="silence_detected")
                 return utterance
 
             # Timeout with no speech detected at all
             if total_elapsed >= self.config.listening_timeout_seconds and len(self._audio_buffer) < 4000:
+                voice_logger.session_timeout(reason="no_speech_detected")
                 self._transition_to(VoiceState.IDLE)
                 self._audio_buffer.clear()
                 return None

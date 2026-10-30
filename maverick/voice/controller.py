@@ -20,6 +20,7 @@ from maverick.system.monitor import (
 )
 from maverick.voice.config import VoiceConfig
 from maverick.voice.intent import BilingualIntentClassifier
+from maverick.voice.observability import voice_logger
 from maverick.voice.session import VoiceSession, VoiceState
 from maverick.voice.stt import LocalIntentSTTProvider, STTProvider, WhisperCppSTTProvider
 from maverick.voice.tts import SpeechDispatcherTTS, TTSProvider
@@ -69,10 +70,16 @@ class VoiceController:
         action_result = self._route_desktop_action(cmd_lower, confirmed=confirmed)
         if action_result:
             response_text = action_result.get("response", "")
+            status = action_result.get("status", "success")
+            action = action_result.get("action", "voice_action")
+            if status == "confirmation_required":
+                voice_logger.action_confirmation_required(app_id=cmd_text, prompt=response_text)
+            else:
+                voice_logger.action_complete(action=action, status=status, response=response_text)
             self.logger.log_action(
                 action_type="voice_action",
                 target=cmd_text,
-                status=action_result.get("status", "success"),
+                status=status,
                 confirmed=confirmed,
                 details=action_result,
             )
@@ -103,7 +110,23 @@ class VoiceController:
         is_id = parsed.get("is_id", False)
 
         if not intent or intent in ("empty", "unhandled"):
+            voice_logger.intent_classified(
+                intent="unhandled",
+                target=None,
+                lang="id" if is_id else "en",
+                confidence=0.0,
+                clean_text=cmd,
+            )
             return None
+
+        voice_logger.intent_classified(
+            intent=intent,
+            target=str(target) if target else None,
+            lang="id" if is_id else "en",
+            confidence=0.95,
+            clean_text=cmd,
+        )
+        voice_logger.action_start(action=intent, target=str(target) if target else None, confirmed=confirmed)
 
         # 0. Wake Word Acknowledgment
         if intent == "wake_acknowledgment":
