@@ -51,6 +51,15 @@ class TestLiveIntegration(unittest.TestCase):
         players = ctl.list_active_mpris_players()
         self.assertIsInstance(players, list)
 
+    def test_live_spotify_mpris_integration(self):
+        ctl = SpotifyController()
+        if ctl.is_player_active():
+            status = ctl.get_status()
+            self.assertEqual(status["status"], "success")
+            self.assertEqual(status["player"], "org.mpris.MediaPlayer2.spotify")
+            self.assertIn("playback_status", status)
+            self.assertIn("track", status)
+
 
 if __name__ == "__main__":
     unittest.main()

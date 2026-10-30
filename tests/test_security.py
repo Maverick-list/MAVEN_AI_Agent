@@ -63,9 +63,16 @@ class TestSecurity(unittest.TestCase):
         )
         self.assertEqual(cleaned_url, ["https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"])
 
+        # Regression: safe startup flags must be allowed
+        cleaned_flags = validate_app_arguments(spotify, ["--no-zygote", "--disable-gpu"])
+        self.assertEqual(cleaned_flags, ["--no-zygote", "--disable-gpu"])
+
         with self.assertRaises(SecurityError) as ctx:
             validate_app_arguments(spotify, ["malicious; rm -rf /"])
-        self.assertIn("Invalid Spotify URI", str(ctx.exception))
+        self.assertIn("Invalid Spotify URI or flag", str(ctx.exception))
+
+        with self.assertRaises(SecurityError):
+            validate_app_arguments(spotify, ["--unauthorized-flag"])
 
     def test_argument_validation_for_code_path(self):
         code = get_authorized_app("code")

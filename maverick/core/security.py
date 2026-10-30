@@ -68,9 +68,12 @@ def validate_app_arguments(app: AuthorizedApp, args: Optional[List[str]] = None)
             cleaned_args.append(val)
 
         elif app.id == "spotify":
-            if not _SAFE_SPOTIFY_URI_REGEX.match(val):
-                raise SecurityError(f"Invalid Spotify URI or URL: '{val}'")
-            cleaned_args.append(val)
+            if val in ("--no-zygote", "--disable-gpu"):
+                cleaned_args.append(val)
+            elif _SAFE_SPOTIFY_URI_REGEX.match(val):
+                cleaned_args.append(val)
+            else:
+                raise SecurityError(f"Invalid Spotify URI or flag: '{val}'")
 
         elif app.id in ("code", "nautilus"):
             # Arguments must resolve to an existing local filesystem directory or file

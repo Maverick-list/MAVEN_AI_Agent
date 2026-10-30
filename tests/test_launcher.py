@@ -80,5 +80,27 @@ class TestLauncher(unittest.TestCase):
         self.assertIn("WAYLAND_DISPLAY", call_kwargs.get("env"))
 
 
+    @patch("maverick.desktop.launcher.is_binary_available")
+    @patch("subprocess.Popen")
+    @patch("time.sleep")
+    def test_launch_app_spotify_default_args(self, mock_sleep, mock_popen, mock_avail):
+        mock_avail.return_value = True
+        mock_proc = MagicMock()
+        mock_proc.pid = 8888
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+
+        res = launch_app("spotify")
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(res["pid"], 8888)
+
+        # Verify default args --no-zygote --disable-gpu were applied
+        call_args, _ = mock_popen.call_args
+        cmd = call_args[0]
+        self.assertEqual(cmd[0], "/snap/bin/spotify")
+        self.assertIn("--no-zygote", cmd)
+        self.assertIn("--disable-gpu", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

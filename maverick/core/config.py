@@ -27,6 +27,7 @@ class AuthorizedApp:
     allow_args: bool
     requires_confirmation: bool
     description: str
+    default_args: tuple = ()
 
 
 # Strict Allowlist of Authorized Applications on this Ubuntu GNOME Desktop
@@ -37,9 +38,10 @@ AUTHORIZED_APPLICATIONS: Dict[str, AuthorizedApp] = {
         binary_path="/snap/bin/spotify",
         desktop_file="spotify_spotify.desktop",
         category="media",
-        allow_args=True,  # e.g., Spotify URIs
+        allow_args=True,  # e.g., Spotify URIs or safe startup flags
         requires_confirmation=False,
         description="Music streaming player",
+        default_args=("--no-zygote", "--disable-gpu"),
     ),
     "code": AuthorizedApp(
         id="code",

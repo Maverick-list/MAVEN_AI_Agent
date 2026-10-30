@@ -133,6 +133,48 @@ class TestSpotifyController(unittest.TestCase):
         with self.assertRaises(SecurityError):
             self.ctl.open_uri("file:///path/to/bad")
 
+    @patch.object(SpotifyController, "is_player_active")
+    @patch.object(SpotifyController, "_get_properties_proxy")
+    def test_get_status_snap_url_extraction(self, mock_props_proxy, mock_active):
+        mock_active.return_value = True
+        props_mock = MagicMock()
+        mock_props_proxy.return_value = props_mock
+
+        # Test extraction with /com/spotify/track/ path
+        def mock_get_snap(sig, iface, prop_name):
+            if prop_name == "PlaybackStatus":
+                return "Paused"
+            elif prop_name == "Volume":
+                return 0.5
+            elif prop_name == "Metadata":
+                return {
+                    "xesam:title": "Song",
+                    "xesam:artist": ["Artist"],
+                    "xesam:album": "Album",
+                    "mpris:trackid": "/com/spotify/track/abc123xyz",
+                    "mpris:length": 100000000,
+                    "xesam:url": "https://open.spotify.com/track/abc123xyz",
+                }
+            return None
+
+        props_mock.Get.side_effect = mock_get_snap
+        status_snap = self.ctl.get_status()
+        self.assertEqual(status_snap["track"]["web_url"], "https://open.spotify.com/track/abc123xyz")
+
+    @patch.object(SpotifyController, "is_player_active")
+    @patch.object(SpotifyController, "_get_player_proxy")
+    @patch.object(SpotifyController, "_run_unconfined_gdbus")
+    def test_apparmor_access_denied_fallback(self, mock_unconfined, mock_player_proxy, mock_active):
+        mock_active.return_value = True
+        player_mock = MagicMock()
+        # Simulate GLib GError AccessDenied from AppArmor
+        player_mock.Play.side_effect = Exception("GDBus.Error:org.freedesktop.DBus.Error.AccessDenied: An AppArmor policy prevents this sender")
+        mock_player_proxy.return_value = player_mock
+
+        res = self.ctl.play()
+        self.assertEqual(res["status"], "success")
+        mock_unconfined.assert_called_once_with(["--method", "org.mpris.MediaPlayer2.Player.Play"])
+
 
 if __name__ == "__main__":
     unittest.main()

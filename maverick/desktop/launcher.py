@@ -134,8 +134,9 @@ def launch_app(
             reason=f"Launching {app.display_name} has external desktop or browser consequences.",
         )
 
-    # 3. Validate arguments
-    sanitized_args = validate_app_arguments(app, args)
+    # 3. Validate arguments (apply default_args if no custom args supplied)
+    effective_args = list(app.default_args) if (not args and app.default_args) else (args or [])
+    sanitized_args = validate_app_arguments(app, effective_args)
 
     # 4. Prepare execution environment (Wayland & D-Bus awareness)
     env = os.environ.copy()
