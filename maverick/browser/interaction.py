@@ -10,6 +10,7 @@ from maverick.browser.security import (
     is_consequential_interaction,
     verify_browser_confirmation,
     BrowserSecurityError,
+    CONSEQUENTIAL_SELECTOR_PATTERNS,
 )
 from maverick.browser.tabs import TabManager
 
@@ -28,17 +29,18 @@ class ElementInteractor:
     def click(self, selector: str, tab_id: Optional[str] = None, confirmed: bool = False) -> Dict[str, Any]:
         """
         Click an element identified by CSS selector.
-        Consequential actions (e.g., submit, purchase, delete) require explicit confirmation.
+        Consequential actions (e.g., submit, purchase, delete, send message) require explicit confirmation.
+        Both selector-level and DOM element inspection are checked for consequential actions.
         """
         valid_selector = validate_element_selector(selector)
 
-        # Check for consequential interactions requiring confirmation
+        # 1. Selector-level consequential interaction check
         if is_consequential_interaction(valid_selector):
             verify_browser_confirmation(
                 action="click",
                 target=valid_selector,
                 is_confirmed=confirmed,
-                reason=f"Element '{valid_selector}' matches consequential interaction pattern.",
+                reason=f"Element selector '{valid_selector}' matches consequential interaction pattern.",
             )
 
         tab = self.tab_manager.get_target_tab(tab_id)
@@ -48,17 +50,39 @@ class ElementInteractor:
 
         cdp = CDPClient(ws_url, timeout=self.tab_manager.config.timeout_seconds)
 
+        # 2. DOM-level verification before triggering click
         click_js = f"""
         (() => {{
             const el = document.querySelector({json.dumps(valid_selector)});
             if (!el) {{
                 return {{ found: false, error: 'Element not found: ' + {json.dumps(valid_selector)} }};
             }}
+
+            const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').toLowerCase().trim();
+            const type = (el.getAttribute('type') || '').toLowerCase();
+            const role = (el.getAttribute('role') || '').toLowerCase();
+
+            // Check if element is a submit button or matches consequential text
+            const consequentialPatterns = {json.dumps(list(CONSEQUENTIAL_SELECTOR_PATTERNS))};
+            const isSubmit = type === 'submit';
+            const textMatches = consequentialPatterns.some(p => text.includes(p));
+
+            if (!{json.dumps(confirmed)} && (isSubmit || textMatches)) {{
+                return {{
+                    found: true,
+                    consequential: true,
+                    tagName: el.tagName.toLowerCase(),
+                    text: text.slice(0, 100),
+                    reason: isSubmit ? 'Target is an input/button with type="submit"' : 'Target text matches consequential action ("' + text.slice(0, 50) + '")'
+                }};
+            }}
+
             el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
             el.focus();
             el.click();
             return {{
                 found: true,
+                consequential: false,
                 tagName: el.tagName.toLowerCase(),
                 id: el.id || '',
                 text: (el.innerText || el.value || '').slice(0, 100).trim()
@@ -75,6 +99,14 @@ class ElementInteractor:
         if not val.get("found"):
             raise InteractionError(val.get("error", f"Element not found: '{valid_selector}'"))
 
+        if val.get("consequential"):
+            verify_browser_confirmation(
+                action="click",
+                target=valid_selector,
+                is_confirmed=False,
+                reason=val.get("reason", "Target DOM element is consequential."),
+            )
+
         return {
             "clicked": True,
             "selector": valid_selector,
@@ -87,6 +119,7 @@ class ElementInteractor:
     def fill(self, selector: str, value: str, tab_id: Optional[str] = None, confirmed: bool = False) -> Dict[str, Any]:
         """
         Fill text into an input field or textarea identified by CSS selector.
+        Blocks targeting password fields directly to prevent automated password dumping/tampering.
         """
         valid_selector = validate_element_selector(selector)
         clean_value = sanitize_input_value(value)
@@ -97,7 +130,7 @@ class ElementInteractor:
                 action="fill",
                 target=valid_selector,
                 is_confirmed=confirmed,
-                reason=f"Element '{valid_selector}' matches consequential interaction pattern.",
+                reason=f"Element selector '{valid_selector}' matches consequential interaction pattern.",
             )
 
         tab = self.tab_manager.get_target_tab(tab_id)
@@ -117,6 +150,11 @@ class ElementInteractor:
                 return {{ found: false, error: 'Element ' + {json.dumps(valid_selector)} + ' is not an input, textarea, or editable element.' }};
             }}
             
+            // Block filling password fields
+            if (el.type === 'password') {{
+                return {{ found: false, error: 'Automated filling of password fields is strictly disallowed for security.' }};
+            }}
+
             // Set value and trigger events
             el.focus();
             if (el.isContentEditable) {{

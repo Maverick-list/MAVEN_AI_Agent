@@ -1,4 +1,4 @@
-"""Maverick DevOS - Browser Tab Management."""
+"""Maverick DevOS - Hardened Browser Tab Management."""
 
 import json
 import urllib.error
@@ -6,7 +6,11 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 from maverick.browser.config import BrowserConfig
-from maverick.browser.security import validate_navigation_url, BrowserSecurityError
+from maverick.browser.security import (
+    validate_navigation_url,
+    validate_target_id,
+    BrowserSecurityError,
+)
 
 
 class TabManagerError(Exception):
@@ -15,7 +19,7 @@ class TabManagerError(Exception):
 
 
 class TabManager:
-    """Manages browser tabs via CDP HTTP endpoints."""
+    """Manages browser tabs via CDP HTTP endpoints with strict target validation."""
 
     def __init__(self, config: Optional[BrowserConfig] = None):
         self.config = config or BrowserConfig()
@@ -47,10 +51,11 @@ class TabManager:
             raise TabManagerError("No open page tabs available in the browser session.")
 
         if tab_id:
+            clean_id = validate_target_id(tab_id)
             for t in tabs:
-                if t["id"] == tab_id:
+                if t["id"] == clean_id:
                     return t
-            raise TabManagerError(f"Tab with ID '{tab_id}' was not found.")
+            raise TabManagerError(f"Target '{clean_id}' was not found in active automation browser.")
 
         # Default to the first open page tab
         return tabs[0]
@@ -66,10 +71,14 @@ class TabManager:
             with urllib.request.urlopen(req, timeout=5.0) as res:
                 tab_info = json.loads(res.read().decode("utf-8"))
 
+            new_id = tab_info.get("id", "")
+            if new_id:
+                validate_target_id(new_id)
+
             return {
                 "status": "success",
                 "action": "open_tab",
-                "id": tab_info.get("id"),
+                "id": new_id,
                 "title": tab_info.get("title", ""),
                 "url": tab_info.get("url", clean_url),
                 "message": f"Opened new tab navigating to '{clean_url}'.",
@@ -87,10 +96,14 @@ class TabManager:
             target = self.get_target_tab()
             clean_id = target["id"]
         else:
-            clean_id = tab_id.strip()
+            clean_id = validate_target_id(tab_id)
 
-        if not clean_id or "/" in clean_id or ".." in clean_id:
-            raise BrowserSecurityError(f"Invalid tab ID: '{tab_id}'")
+        # Verify target belongs to the managed browser
+        active_tabs = self.list_tabs()
+        if not any(t["id"] == clean_id for t in active_tabs):
+            raise TabManagerError(
+                f"Cannot close target '{clean_id}': target does not belong to active automation session."
+            )
 
         endpoint = f"{self.config.cdp_http_url}/json/close/{clean_id}"
         try:
@@ -108,9 +121,14 @@ class TabManager:
 
     def activate_tab(self, tab_id: str) -> Dict[str, Any]:
         """Switch to and focus a tab by ID."""
-        clean_id = tab_id.strip()
-        if not clean_id:
-            raise BrowserSecurityError("Tab ID cannot be empty.")
+        clean_id = validate_target_id(tab_id)
+
+        # Verify target belongs to the managed browser
+        active_tabs = self.list_tabs()
+        if not any(t["id"] == clean_id for t in active_tabs):
+            raise TabManagerError(
+                f"Cannot activate target '{clean_id}': target does not belong to active automation session."
+            )
 
         endpoint = f"{self.config.cdp_http_url}/json/activate/{clean_id}"
         try:

@@ -1,7 +1,8 @@
-"""Maverick DevOS - Page Inspection and Screenshot Capture."""
+"""Maverick DevOS - Page Inspection and Screenshot Capture with Credential Scrubbing."""
 
 import base64
 import os
+import re
 import time
 from typing import Any, Dict, Optional
 from maverick.browser.cdp import CDPClient
@@ -12,6 +13,24 @@ from maverick.browser.tabs import TabManager
 class PageInspectorError(Exception):
     """Raised when page inspection or screenshot operations fail."""
     pass
+
+
+# Redaction patterns for secrets that must never leak into extracted page text
+_TOKEN_REDACTION_PATTERNS = [
+    (re.compile(r"Bearer\s+[a-zA-Z0-9_\-\.]{15,}", re.IGNORECASE), "Bearer [REDACTED_TOKEN]"),
+    (re.compile(r"eyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]+"), "[REDACTED_JWT]"),
+    (re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[a-zA-Z0-9]{36}\b"), "[REDACTED_GITHUB_TOKEN]"),
+    (re.compile(r"\bsk-[a-zA-Z0-9_\-]{20,}\b"), "[REDACTED_API_KEY]"),
+    (re.compile(r"\b(?:\d{4}[ -]?){3}\d{4}\b"), "[REDACTED_CARD]"),
+]
+
+
+def redact_sensitive_text(text: str) -> str:
+    """Scrub common authentication tokens, API keys, and sensitive data."""
+    sanitized = text
+    for pattern, replacement in _TOKEN_REDACTION_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
+    return sanitized
 
 
 class PageInspector:
@@ -37,7 +56,8 @@ class PageInspector:
                 "expression": "document.title",
                 "returnByValue": True
             })
-            title = res_title.get("result", {}).get("value", "")
+            raw_title = res_title.get("result", {}).get("value", "")
+            title = redact_sensitive_text(raw_title)
 
             # 2. Read current location href
             res_url = cdp.send_command("Runtime.evaluate", {
@@ -46,12 +66,16 @@ class PageInspector:
             })
             url = res_url.get("result", {}).get("value", "")
 
-            # 3. Read visible body text (redacting password fields)
+            # 3. Read visible body text (redacting password fields and sensitive inputs)
             text_extraction_js = """
             (() => {
-                // Ensure no password values can leak into innerText extraction
-                const passwords = document.querySelectorAll('input[type="password"]');
-                passwords.forEach(el => el.setAttribute('data-orig-val', el.value || ''));
+                // Ensure no password or sensitive field values can leak into extraction
+                const sensitiveInputs = document.querySelectorAll(
+                    'input[type="password"], input[type="hidden"], input[autocomplete*="password"]'
+                );
+                sensitiveInputs.forEach(el => {
+                    el.setAttribute('data-orig-val', '[MASKED]');
+                });
                 
                 let text = document.body ? document.body.innerText : '';
                 return text;
@@ -61,10 +85,10 @@ class PageInspector:
                 "expression": text_extraction_js,
                 "returnByValue": True
             })
-            full_text = res_text.get("result", {}).get("value", "")
-            trimmed_text = full_text.strip()
+            raw_text = res_text.get("result", {}).get("value", "")
+            scrubbed_text = redact_sensitive_text(raw_text).strip()
 
-            preview = trimmed_text[:1000] + ("..." if len(trimmed_text) > 1000 else "")
+            preview = scrubbed_text[:1000] + ("..." if len(scrubbed_text) > 1000 else "")
 
             return {
                 "status": "success",
@@ -72,10 +96,10 @@ class PageInspector:
                 "tab_id": tab["id"],
                 "title": title,
                 "url": url,
-                "text_length": len(trimmed_text),
+                "text_length": len(scrubbed_text),
                 "text_preview": preview,
-                "text": trimmed_text,
-                "text_full": trimmed_text,
+                "text": scrubbed_text,
+                "text_full": scrubbed_text,
             }
         finally:
             cdp.close()

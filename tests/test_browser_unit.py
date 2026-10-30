@@ -32,9 +32,10 @@ class TestBrowserUnit(unittest.TestCase):
         )
 
     # 1. Lifecycle Tests
+    @patch("maverick.browser.lifecycle.BrowserLifecycle.owns_active_session", return_value=True)
     @patch("maverick.browser.lifecycle.urllib.request.urlopen")
-    def test_lifecycle_is_running_true(self, mock_urlopen):
-        """Test is_running returns True when /json/version responds."""
+    def test_lifecycle_is_running_true(self, mock_urlopen, mock_owns):
+        """Test is_running returns True when /json/version responds and session is owned."""
         mock_resp = MagicMock()
         mock_resp.status = 200
         mock_resp.__enter__.return_value = mock_resp
@@ -101,11 +102,17 @@ class TestBrowserUnit(unittest.TestCase):
             "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/tab2"
         }).encode()
 
+        mock_resp_list = MagicMock()
+        mock_resp_list.__enter__.return_value = mock_resp_list
+        mock_resp_list.read.return_value = json.dumps([
+            {"id": "tab2", "type": "page", "url": "about:blank"}
+        ]).encode()
+
         mock_resp_close = MagicMock()
         mock_resp_close.__enter__.return_value = mock_resp_close
         mock_resp_close.read.return_value = b"Target is closing"
 
-        mock_urlopen.side_effect = [mock_resp_new, mock_resp_close]
+        mock_urlopen.side_effect = [mock_resp_new, mock_resp_list, mock_resp_close]
 
         manager = TabManager(self.config)
         new_tab = manager.new_tab("about:blank")
