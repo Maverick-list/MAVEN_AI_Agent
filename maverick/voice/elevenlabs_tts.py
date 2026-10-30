@@ -274,7 +274,7 @@ class ElevenLabsTTSProvider:
         voice_id = urllib.parse.quote(params["voice_id"], safe="")
         url = (
             f"{ELEVENLABS_API_BASE}/text-to-speech/{voice_id}/stream"
-            f"?output_format=mp3_44100_128&optimize_streaming_latency=2"
+            f"?output_format=mp3_44100_128"
         )
 
         voice_settings: Dict[str, Any] = {
@@ -561,12 +561,13 @@ class ElevenLabsTTSProvider:
                     "voices": remote_voices,
                 }
         except urllib.error.HTTPError as http_err:
+            # Scoped TTS-only keys often omit 'voices_read' permission; keep curated JARVIS presets
+            # without polluting TTS synthesis health state.
             code, msg = self._classify_http_error(http_err)
-            self._record_error(code, msg)
             return {
-                "status": "error",
-                "key_status": code,
-                "hint": msg,
+                "status": "presets_only",
+                "key_status": "tts_scoped" if http_err.code in (401, 403) else code,
+                "hint": "Using built-in JARVIS voice presets (API key is scoped to Text-to-Speech)",
                 "voices": JARVIS_VOICE_PRESETS,
             }
         except Exception as exc:
@@ -610,3 +611,4 @@ class ElevenLabsTTSProvider:
         if status >= 500:
             return "server_error", f"ElevenLabs service error (HTTP {status})"
         return f"http_{status}", f"ElevenLabs HTTP {status}"
+
