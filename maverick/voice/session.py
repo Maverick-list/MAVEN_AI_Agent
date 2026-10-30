@@ -8,7 +8,11 @@ from typing import Callable, List, Optional
 from maverick.voice.audio import AudioCapture, calculate_rms
 from maverick.voice.config import VoiceConfig
 from maverick.voice.tts import TTSProvider, SpeechDispatcherTTS
-from maverick.voice.wakeword import WakeWordDetector, EnergySpectralWakeWordDetector
+from maverick.voice.wakeword import (
+    WakeWordDetector,
+    EnergySpectralWakeWordDetector,
+    LocalKeywordWakeWordDetector,
+)
 
 
 class VoiceState(Enum):
@@ -37,7 +41,14 @@ class VoiceSession:
     ):
         self.config = config or VoiceConfig()
         self.audio = audio_capture or AudioCapture(self.config)
-        self.wake_detector = wake_detector or EnergySpectralWakeWordDetector(self.config)
+        if wake_detector is not None:
+            self.wake_detector = wake_detector
+        else:
+            local_detector = LocalKeywordWakeWordDetector(self.config)
+            if getattr(local_detector.stt, "is_available", lambda: False)():
+                self.wake_detector = local_detector
+            else:
+                self.wake_detector = EnergySpectralWakeWordDetector(self.config)
         self.tts = tts or SpeechDispatcherTTS(self.config)
 
         self._state = VoiceState.IDLE

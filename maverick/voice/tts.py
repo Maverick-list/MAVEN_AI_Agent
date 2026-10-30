@@ -48,10 +48,10 @@ class SpeechDispatcherTTS(TTSProvider):
                 return True
             return self._is_speaking
 
-    def speak(self, text: str, wait: bool = True) -> bool:
+    def speak(self, text: str, wait: bool = True, language: Optional[str] = None) -> bool:
         """
         Synthesize text using spd-say.
-        Supports cancellation and interruption.
+        Supports cancellation, interruption, and automatic English/Indonesian language selection.
         """
         if not text or not text.strip():
             return False
@@ -64,9 +64,17 @@ class SpeechDispatcherTTS(TTSProvider):
         self.stop()
 
         clean_text = text.strip()
+
+        # Determine language (support English 'en' and Indonesian 'id')
+        target_lang = language or "en"
+        id_keywords = {"buka", "sedang", "berjalan", "penggunaan", "tersedia", "musik", "lagu", "baterai", "konfirmasi", "selamat", "anda", "saat", "ini", "tidak"}
+        words = set(clean_text.lower().split())
+        if not language and len(words.intersection(id_keywords)) >= 1:
+            target_lang = "id"
+
         cmd = [
             bin_path,
-            "-l", "en",
+            "-l", target_lang,
             "-r", str(self.config.tts_rate),
             "-p", str(self.config.tts_pitch),
             "-i", str(self.config.tts_volume),

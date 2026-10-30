@@ -11,9 +11,13 @@ from maverick.voice.audio import AudioCapture, AudioPlayer, calculate_rms, list_
 from maverick.voice.config import VoiceConfig
 from maverick.voice.controller import VoiceController
 from maverick.voice.session import VoiceSession, VoiceState
-from maverick.voice.stt import LocalIntentSTTProvider, MockSTTProvider
+from maverick.voice.stt import LocalIntentSTTProvider, MockSTTProvider, WhisperCppSTTProvider
 from maverick.voice.tts import MockTTSProvider, SpeechDispatcherTTS
-from maverick.voice.wakeword import EnergySpectralWakeWordDetector, MockWakeWordDetector
+from maverick.voice.wakeword import (
+    EnergySpectralWakeWordDetector,
+    LocalKeywordWakeWordDetector,
+    MockWakeWordDetector,
+)
 
 
 class TestVoiceSubsystem(unittest.TestCase):
@@ -206,6 +210,87 @@ class TestVoiceSubsystem(unittest.TestCase):
         res = ctl.handle_voice_command("Maven, open terminal", confirmed=False)
         self.assertEqual(res["status"], "confirmation_required")
         self.assertIn("requires confirmation", res["response"])
+
+        # Indonesian confirmation gate
+        res_id = ctl.handle_voice_command("Maven, buka terminal", confirmed=False)
+        self.assertEqual(res_id["status"], "confirmation_required")
+        self.assertIn("memerlukan konfirmasi", res_id["response"])
+
+    # 14. WhisperCppSTTProvider Unit & Integration Tests
+    def test_whisper_cpp_stt_provider(self):
+        provider = WhisperCppSTTProvider(self.config)
+        self.assertTrue(provider.is_available())
+        # Empty audio
+        self.assertEqual(provider.transcribe(b""), "")
+        self.assertEqual(provider.transcribe(b"\x00" * 100), "")
+
+        # Test transcription with actual mock subprocess
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Hey Maven, open Chrome")
+            txt = provider.transcribe(b"\x00" * 4000)
+            self.assertEqual(txt, "Hey Maven, open Chrome")
+
+    # 15. LocalKeywordWakeWordDetector Tests
+    def test_local_keyword_wake_word_detector(self):
+        mock_stt = MockSTTProvider("")
+        detector = LocalKeywordWakeWordDetector(self.config, stt_provider=mock_stt)
+
+        # Silence / low energy -> False, no STT call
+        silence = b"\x00" * 2048
+        self.assertFalse(detector.process_frame(silence))
+        self.assertEqual(mock_stt.last_audio_bytes_len, 0)
+
+        # Noise burst without wake word transcript -> False
+        loud_chunk = b"\x7f\x50" * 1024
+        # Feed enough chunks to reach minimum buffer size
+        for _ in range(12):
+            detector.process_frame(loud_chunk)
+        self.assertFalse(detector.process_frame(loud_chunk))
+
+        # Feed chunk with wake word matched
+        mock_stt.set_transcript("Hey Maven")
+        detector._last_check_time = 0.0  # reset check cooldown
+        self.assertTrue(detector.process_frame(loud_chunk))
+
+        # Immediate repeat should be blocked by debounce
+        self.assertFalse(detector.process_frame(loud_chunk))
+
+    # 16. Bilingual Indonesian Voice Commands
+    def test_bilingual_indonesian_routing(self):
+        ctl = VoiceController(self.config)
+
+        # RAM status in Indonesian
+        res_ram = ctl.handle_voice_command("Maven, berapa sisa ram")
+        self.assertEqual(res_ram["status"], "success")
+        self.assertIn("RAM yang tersedia", res_ram["response"])
+
+        # Battery status in Indonesian
+        res_bat = ctl.handle_voice_command("Maven, status baterai")
+        self.assertEqual(res_bat["status"], "success")
+        self.assertIn("Baterai", res_bat["response"])
+
+        # Desktop context summary in Indonesian
+        res_ctx = ctl.handle_voice_command("Maven, ringkasan desktop")
+        self.assertEqual(res_ctx["status"], "success")
+        self.assertIn("Ringkasan desktop", res_ctx["response"])
+
+        # Mute in Indonesian
+        res_mute = ctl.handle_voice_command("Maven, bisu")
+        self.assertEqual(res_mute["status"], "success")
+        self.assertIn("Mikrofon dimatikan", res_mute["response"])
+        self.assertTrue(ctl.session.is_muted)
+
+        # Unmute in Indonesian
+        res_unmute = ctl.handle_voice_command("Maven, aktifkan mikrofon")
+        self.assertEqual(res_unmute["status"], "success")
+        self.assertIn("Mikrofon diaktifkan", res_unmute["response"])
+        self.assertFalse(ctl.session.is_muted)
+
+        # Music pause in Indonesian
+        with patch.object(ctl.session, "interrupt") as mock_interrupt:
+            res_stop = ctl.handle_voice_command("Maven, berhenti")
+            self.assertEqual(res_stop["status"], "success")
+            mock_interrupt.assert_called_once()
 
 
 if __name__ == "__main__":

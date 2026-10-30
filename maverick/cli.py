@@ -464,10 +464,18 @@ def handle_voice_commands(args: argparse.Namespace) -> None:
     if sub == "status":
         devs = list_audio_devices()
         cfg = VoiceConfig()
+        from maverick.voice.stt import WhisperCppSTTProvider
+        whisper_stt = WhisperCppSTTProvider(cfg)
         output_result(
             {
                 "status": "success",
                 "audio_devices": devs,
+                "stt": {
+                    "engine": "whisper.cpp",
+                    "available": whisper_stt.is_available(),
+                    "model_path": cfg.whisper_model_path,
+                    "language": cfg.stt_language,
+                },
                 "tts": {
                     "engine": cfg.tts_engine,
                     "voice": cfg.tts_voice,

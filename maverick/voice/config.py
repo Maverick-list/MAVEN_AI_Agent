@@ -14,6 +14,12 @@ class VoiceConfig:
     sample_width_bytes: int = 2  # 16-bit PCM (S16_LE)
     chunk_size: int = 1024
 
+    # Whisper STT & Local Inference specifications
+    whisper_bin_path: str = "/home/firza-ilmi/.local/share/maverick/whisper.cpp/build/bin/whisper-cli"
+    whisper_model_path: str = "/home/firza-ilmi/.local/share/maverick/whisper.cpp/models/ggml-tiny.bin"
+    stt_language: str = "auto"  # auto-detect English / Indonesian
+    whisper_threads: int = 8
+
     # Wake word settings
     wake_words: List[str] = field(default_factory=lambda: ["maven", "jarvis"])
     wake_word_sensitivity: float = 0.6

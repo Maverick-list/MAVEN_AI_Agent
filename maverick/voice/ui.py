@@ -131,7 +131,11 @@ class VoiceUI:
                     self.render_header()
                     transcript = self.controller.stt.transcribe(utterance)
                     if not transcript:
-                        transcript = "Desktop status summary"  # Default fallback if silence
+                        self._last_transcript = "[No intelligible speech detected]"
+                        self._last_response = ""
+                        self.render_header()
+                        self.session.reset()
+                        continue
 
                     self._last_transcript = transcript
                     res = self.controller.handle_voice_command(transcript)
