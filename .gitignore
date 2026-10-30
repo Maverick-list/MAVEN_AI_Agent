@@ -8,6 +8,7 @@ env/
 *.env
 *.pem
 *.key
+*.token
 *.secret
 .pytest_cache/
 .coverage

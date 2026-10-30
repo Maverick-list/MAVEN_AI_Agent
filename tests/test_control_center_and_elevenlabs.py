@@ -106,7 +106,7 @@ class TestControlCenterAndElevenLabs(unittest.TestCase):
 
     # 2. Credential Redaction & Zero Secret Exposure
     def test_credential_redaction_and_secret_hygiene(self) -> None:
-        fake_sk = "sk_9f8e7d6c5b4a3210fedcba9876543210abcdef"
+        fake_sk = "sk_mock_test_token_not_a_real_key_redaction_test_12345"
         leaked_line = f"Error calling ElevenLabs with xi-api-key: {fake_sk} and api_key={fake_sk}"
         scrubbed = redact_sensitive_text(leaked_line)
         self.assertNotIn(fake_sk, scrubbed)
@@ -145,7 +145,7 @@ class TestControlCenterAndElevenLabs(unittest.TestCase):
     @patch.object(ElevenLabsTTSProvider, "_resolve_streaming_player_cmd", return_value=["/bin/cat"])
     @patch("subprocess.Popen")
     def test_elevenlabs_bilingual_synthesis_and_streaming(self, mock_popen, _mock_cmd, mock_urlopen) -> None:
-        fake_sk = "sk_live_test_key_1234567890abcdef123456"
+        fake_sk = "sk_mock_streaming_test_token_not_a_real_key_12345"
         captured_requests = []
 
         def _fake_urlopen(req, timeout=10):
@@ -183,7 +183,7 @@ class TestControlCenterAndElevenLabs(unittest.TestCase):
     @patch.object(ElevenLabsTTSProvider, "_resolve_streaming_player_cmd", return_value=["/bin/cat"])
     @patch("subprocess.Popen")
     def test_tts_fallback_and_network_failure_recovery(self, mock_popen, _mock_cmd, mock_urlopen) -> None:
-        fake_sk = "sk_live_test_key_1234567890abcdef123456"
+        fake_sk = "sk_mock_streaming_test_token_not_a_real_key_12345"
         mock_popen.side_effect = lambda *a, **kw: MagicMock(poll=lambda: 0, wait=lambda timeout=None: 0, stdin=io.BytesIO())
 
         fallback_mock = MagicMock(spec=SpeechDispatcherTTS)
