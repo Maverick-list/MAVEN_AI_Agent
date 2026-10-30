@@ -35,7 +35,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
     decisively rejects unrelated loud noises (claps, coughs, sneezes) and non-wake speech.
     """
 
-    WAKE_REGEX = re.compile(r"\b(hey\s+)?(maven|jarvis|mavin|mayven)\b", re.IGNORECASE)
+    WAKE_REGEX = re.compile(r"\b(hey\s+)?(maven|jarvis|mavin|mayven|maveran|maveram)\b", re.IGNORECASE)
 
     def __init__(
         self,
@@ -47,6 +47,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self.wake_words = [w.strip().lower() for w in self.config.wake_words]
         self._last_trigger_time = 0.0
         self._last_check_time = 0.0
+        self._failed_checks = 0
         self._noise_floor = 0.02
         self._ring_buffer = bytearray()
         # Maintain ~1.2 seconds of 16kHz 16-bit mono audio
@@ -57,6 +58,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._ring_buffer.clear()
         self._last_trigger_time = 0.0
         self._last_check_time = 0.0
+        self._failed_checks = 0
         self._noise_floor = 0.02
 
     def process_frame(self, frame_bytes: bytes) -> bool:
@@ -65,6 +67,8 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         Uses fast RMS energy gating with dynamic background floor adaptation to avoid
         running inference on silence or steady ambient hum, followed by acoustic
         keyword verification when speech energy rises over the ambient floor.
+        Includes adaptive backoff cooldown on consecutive non-wake bursts to prevent
+        CPU starvation during continuous background noise.
         """
         if not frame_bytes or len(frame_bytes) < 2:
             return False
@@ -86,36 +90,41 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         is_burst = rms > (self._noise_floor * 1.6 + 0.02)
         if not is_burst:
             self._noise_floor = 0.92 * self._noise_floor + 0.08 * rms
+            self._failed_checks = 0
             return False
 
         # Stage 1: Fast VAD check - verify energy exceeds both absolute threshold and ambient floor
         if rms < self.config.speech_start_threshold_rms:
             return False
 
-        # Cooldown check between acoustic verification passes (~0.4s) to prevent CPU starvation
-        if (now - self._last_check_time) < 0.4:
+        # Adaptive cooldown check between acoustic verification passes
+        # Base cooldown is 0.4s; backs off to 0.8s on sustained non-wake bursts to protect CPU
+        required_cooldown = 0.8 if self._failed_checks >= 2 else 0.4
+        if (now - self._last_check_time) < required_cooldown:
             return False
 
         # Stage 2: Acoustic keyword verification
-        # Need at least ~0.6s of buffered audio (19,200 bytes)
-        if len(self._ring_buffer) < 19200:
+        # Need at least ~0.3s of buffered audio (9,600 bytes) to support rapid/short wake utterances
+        if len(self._ring_buffer) < 9600:
             return False
 
         self._last_check_time = now
         audio_snapshot = bytes(self._ring_buffer)
 
-        # Transcribe the rolling window with wake keyword prompt
+        # Transcribe the rolling window with clean, unrepeated wake keyword hint
         transcript = self.stt.transcribe(
             audio_snapshot,
             language="en",
-            prompt="Hey Maven, Maven, Jarvis",
+            prompt="Maven",
         )
 
         if transcript and self.WAKE_REGEX.search(transcript):
             self._last_trigger_time = now
             self._ring_buffer.clear()
+            self._failed_checks = 0
             return True
 
+        self._failed_checks += 1
         return False
 
 

@@ -292,6 +292,35 @@ class TestVoiceSubsystem(unittest.TestCase):
             self.assertEqual(res_stop["status"], "success")
             mock_interrupt.assert_called_once()
 
+    # 17. Spotify Volume Control via Voice
+    @patch("maverick.media.spotify.SpotifyController.set_volume")
+    @patch("maverick.media.spotify.SpotifyController.get_status")
+    def test_spotify_volume_voice_control(self, mock_status, mock_set_vol):
+        mock_status.return_value = {"status": "success", "volume": 0.5, "volume_percent": 50}
+        mock_set_vol.return_value = {"status": "success", "volume": 0.7, "volume_percent": 70}
+
+        ctl = VoiceController(self.config)
+
+        # English explicit volume
+        res_en = ctl.handle_voice_command("Maven, set volume to 70 percent")
+        self.assertEqual(res_en["status"], "success")
+        self.assertIn("Spotify volume set to 70 percent", res_en["response"])
+
+        # English volume up
+        res_up = ctl.handle_voice_command("Maven, increase volume")
+        self.assertEqual(res_up["status"], "success")
+        self.assertIn("Spotify volume increased", res_up["response"])
+
+        # Indonesian explicit volume
+        res_id = ctl.handle_voice_command("Maven, atur volume 80 persen")
+        self.assertEqual(res_id["status"], "success")
+        self.assertIn("Volume Spotify diatur ke 80 persen", res_id["response"])
+
+        # Indonesian volume down
+        res_down = ctl.handle_voice_command("Maven, turunkan volume")
+        self.assertEqual(res_down["status"], "success")
+        self.assertIn("Volume Spotify diturunkan", res_down["response"])
+
 
 if __name__ == "__main__":
     unittest.main()

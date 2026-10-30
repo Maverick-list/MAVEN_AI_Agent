@@ -98,7 +98,7 @@ class VoiceController:
         """Route speech command to Maverick's secure desktop automation subsystems."""
 
         # Determine language context for localized responses
-        is_id = any(w in cmd for w in ("buka", "putar", "jeda", "hentikan", "sisa", "baterai", "ringkasan", "matikan", "aktifkan", "senyapkan", "bisu", "lagu", "musik", "berikutnya", "aplikasi"))
+        is_id = any(w in cmd for w in ("buka", "putar", "jeda", "hentikan", "sisa", "baterai", "ringkasan", "matikan", "aktifkan", "senyapkan", "bisu", "lagu", "musik", "berikutnya", "aplikasi", "atur", "persen", "naikkan", "turunkan", "tambah", "kurang"))
 
         # 1. Spotify / Media Controls
         if re.search(r"\b(play|resume|putar|mainkan|lanjutkan)\b.*\b(music|spotify|song|musik|lagu)\b", cmd) or cmd in ("play", "resume", "putar musik", "mainkan musik", "lanjutkan musik"):
@@ -150,9 +150,46 @@ class VoiceController:
                 resp = "Tidak dapat memeriksa status pemutar musik." if is_id else "Unable to query media player status."
                 return {"status": "error", "response": resp}
 
+        elif re.search(r"\b(volume|suara)\b", cmd):
+            try:
+                ctl = SpotifyController()
+                # 1. Volume up / down
+                if any(w in cmd for w in ("up", "increase", "raise", "naik", "naikkan", "tambah", "perbesar")):
+                    status = ctl.get_status()
+                    curr = status.get("volume", 0.5) if status.get("status") == "success" else 0.5
+                    new_vol = min(1.0, curr + 0.1)
+                    res = ctl.set_volume(new_vol)
+                    pct = int(round(new_vol * 100))
+                    resp = f"Volume Spotify dinaikkan ke {pct} persen." if is_id else f"Spotify volume increased to {pct} percent."
+                    return {"status": "success", "action": "spotify_volume", "response": resp}
+                elif any(w in cmd for w in ("down", "decrease", "lower", "turun", "turunkan", "kurang", "perkecil")):
+                    status = ctl.get_status()
+                    curr = status.get("volume", 0.5) if status.get("status") == "success" else 0.5
+                    new_vol = max(0.0, curr - 0.1)
+                    res = ctl.set_volume(new_vol)
+                    pct = int(round(new_vol * 100))
+                    resp = f"Volume Spotify diturunkan ke {pct} persen." if is_id else f"Spotify volume decreased to {pct} percent."
+                    return {"status": "success", "action": "spotify_volume", "response": resp}
+                # 2. Explicit numeric level: e.g. "volume 70" or "volume to 80 percent"
+                num_match = re.search(r"\b(\d{1,3})\b", cmd)
+                if num_match:
+                    level_int = int(num_match.group(1))
+                    level_int = max(0, min(100, level_int))
+                    res = ctl.set_volume(level_int)
+                    resp = f"Volume Spotify diatur ke {level_int} persen." if is_id else f"Spotify volume set to {level_int} percent."
+                    return {"status": "success", "action": "spotify_volume", "response": resp}
+                # 3. Query current volume
+                status = ctl.get_status()
+                pct = status.get("volume_percent", 50)
+                resp = f"Volume Spotify saat ini adalah {pct} persen." if is_id else f"Current Spotify volume is {pct} percent."
+                return {"status": "success", "action": "spotify_volume", "response": resp}
+            except Exception as e:
+                resp = f"Gagal mengatur volume: {str(e)}" if is_id else f"Could not set volume: {str(e)}"
+                return {"status": "error", "response": resp}
+
         # 2. Application Launching
         app_map = {
-            "code": ["code", "visual studio code", "vs code"],
+            "code": ["code", "visual studio code", "vs code", "visual studio"],
             "google-chrome": ["chrome", "google chrome", "browser", "peramban"],
             "firefox": ["firefox", "mozilla"],
             "nautilus": ["files", "nautilus", "file manager", "berkas", "manajer berkas"],
