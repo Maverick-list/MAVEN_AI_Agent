@@ -55,18 +55,25 @@ class GestureEngine:
     def start(self) -> bool:
         """Start vision processing pipeline."""
         with self._lock:
+            self.mouse.enabled = True
+            self._emergency_stop_triggered = False
             if self.enabled:
                 return True
 
             if not self.camera.start():
+                self.mouse.enabled = False
                 return False
 
             self.enabled = True
-            self.mouse.enabled = True
-            self._emergency_stop_triggered = False
             self._thread = threading.Thread(target=self._run_loop, daemon=True, name="MavenVisionEngine")
             self._thread.start()
             return True
+
+    def reset_emergency_stop(self) -> None:
+        """Reset emergency stop state and re-arm mouse."""
+        with self._lock:
+            self._emergency_stop_triggered = False
+            self.mouse.enabled = True
 
     def stop(self) -> None:
         """Stop vision pipeline and release resources cleanly."""

@@ -151,7 +151,11 @@ class BilingualIntentClassifier:
             return {"intent": "reject", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
 
         # 3. Autonomous Task Planner Intent
-        if any(p in clean for p in ("siapkan environment", "prepare development", "setup dev", "prepare dev", "siapkan dev", "setup environment")):
+        if any(p in clean for p in (
+            "siapkan environment", "prepare development", "setup dev", "prepare dev", "siapkan dev", "setup environment",
+            "create a python", "create python project", "buat aplikasi", "create project", "build a python", "buat proyek",
+            "create a python calculator", "python calculator project", "periksa kondisi", "check laptop status", "diagnostik laptop"
+        )):
             return {"intent": "task_plan", "target": None, "is_id": is_id, "confidence": 1.0, "clean_text": clean}
 
         # 4. Context Memory (Store / Recall)

@@ -236,7 +236,9 @@ class InteractionModeManager:
                     "response": "Could not access the camera. Normal Mode restored.",
                 }
 
-            # Arm virtual mouse
+            # Arm virtual mouse and clear prior emergency stops
+            if self.engine and hasattr(self.engine, "reset_emergency_stop"):
+                self.engine.reset_emergency_stop()
             if self.virtual_mouse and hasattr(self.virtual_mouse, "set_enabled"):
                 self.virtual_mouse.set_enabled(True)
             elif self.engine and hasattr(self.engine, "mouse") and hasattr(self.engine.mouse, "set_enabled"):

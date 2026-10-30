@@ -39,7 +39,7 @@ class VisionController:
         gesture_engine: Optional[GestureEngine] = None,
         screen: Optional[ScreenIntelligence] = None,
         keyboard: Optional[VirtualKeyboard] = None,
-        initial_mode: Any = VisionMode.PRIVACY_MODE,
+        initial_mode: Any = InteractionMode.NORMAL,
     ):
         self.engine = gesture_engine or GestureEngine()
         self.screen = screen or ScreenIntelligence()
