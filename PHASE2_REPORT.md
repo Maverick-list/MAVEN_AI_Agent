@@ -97,7 +97,7 @@ Ran 36 tests in 0.669s — ALL PASSED (OK)
 
 ## 5. Git Commits & Modified Files
 
-- **`~/Maverick-DevOS`** Commit: `758eead`
+- **`~/Maverick-DevOS`** Commit: `23ae06e`
   - `bin/maverick-ctl`: Removed broad CLI de-confinement; preserved standard execution confinement.
   - `maverick/core/security.py`: Added global shell metacharacter rejection.
   - `maverick/desktop/launcher.py`: Added duplicate launch prevention returning `already_running`.
