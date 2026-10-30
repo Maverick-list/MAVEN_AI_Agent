@@ -64,7 +64,15 @@ class SpotifyController:
         """
         Enforce strict allowlisting on all arguments passed to unconfined gdbus fallback.
         Only verified MPRIS methods and tightly bounded parameters are permitted.
+        The unconfined execution context is strictly restricted to Spotify.
         """
+        # 1. Restrict unconfined execution strictly to Spotify
+        if self.dest != SPOTIFY_DBUS_DEST:
+            raise SecurityError(
+                f"Unconfined fallback execution is strictly restricted to '{SPOTIFY_DBUS_DEST}', "
+                f"rejected destination '{self.dest}'."
+            )
+
         if not args or len(args) < 2 or args[0] != "--method":
             raise SecurityError(f"Malformed unconfined gdbus arguments: {args}")
 

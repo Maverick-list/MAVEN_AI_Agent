@@ -69,6 +69,25 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(data["status"], "success")
         self.assertIsInstance(data["players"], list)
 
+    def test_cli_wrapper_confinement_preserved(self):
+        # Verify bin/maverick-ctl executes directly without aa-exec de-confinement
+        wrapper_path = "/home/firza-ilmi/Maverick-DevOS/bin/maverick-ctl"
+        with open(wrapper_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertNotIn("aa-exec -p unconfined", content)
+
+        # Run wrapper script directly
+        res = subprocess.run(
+            [wrapper_path, "app", "list"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5.0,
+        )
+        self.assertEqual(res.returncode, 0)
+        data = json.loads(res.stdout)
+        self.assertEqual(data["status"], "success")
+
 
 if __name__ == "__main__":
     unittest.main()

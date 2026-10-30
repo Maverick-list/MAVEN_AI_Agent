@@ -177,32 +177,57 @@ class TestSpotifyController(unittest.TestCase):
 
 
     def test_unconfined_fallback_boundaries(self):
-        # 1. Reject invalid destination
+        # 1. Reject invalid destination formats
         with self.assertRaises(SecurityError):
             SpotifyController(dest="org.freedesktop.systemd1")
 
         with self.assertRaises(SecurityError):
             SpotifyController(dest="org.mpris.MediaPlayer2; rm -rf /")
 
-        # 2. Reject unapproved method
+        # 2. Reject non-Spotify destinations from unconfined execution (e.g. Chromium)
+        chromium_ctl = SpotifyController(dest="org.mpris.MediaPlayer2.chromium.instance102108")
+        with self.assertRaises(SecurityError) as ctx:
+            chromium_ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Play"])
+        self.assertIn("strictly restricted to 'org.mpris.MediaPlayer2.spotify'", str(ctx.exception))
+
+        # 3. Allow valid Spotify destination and approved methods
+        self.ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Play"])
+        self.ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Pause"])
+        self.ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Next"])
+        self.ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Previous"])
+        self.ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Stop"])
+        self.ctl._validate_unconfined_args([
+            "--method", "org.mpris.MediaPlayer2.Player.OpenUri",
+            "spotify:track:4cOdK2wGLETKBW3PvgPWqT"
+        ])
+        self.ctl._validate_unconfined_args([
+            "--method", "org.freedesktop.DBus.Properties.Get",
+            "org.mpris.MediaPlayer2.Player", "PlaybackStatus"
+        ])
+        self.ctl._validate_unconfined_args([
+            "--method", "org.freedesktop.DBus.Properties.Set",
+            "org.mpris.MediaPlayer2.Player", "Volume", "<@d 0.75>"
+        ])
+
+        # 4. Reject unapproved method
         with self.assertRaises(SecurityError):
             self.ctl._validate_unconfined_args(["--method", "org.freedesktop.DBus.Peer.Ping"])
 
         with self.assertRaises(SecurityError):
             self.ctl._validate_unconfined_args(["--method", "com.malicious.Execute"])
 
-        # 3. Reject extra arguments on parameterless method
+        # 5. Reject extra arguments on parameterless method
         with self.assertRaises(SecurityError):
             self.ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Play", "extra_arg"])
 
-        # 4. Reject unauthorized property on Properties.Get
+        # 6. Reject unauthorized property on Properties.Get
         with self.assertRaises(SecurityError):
             self.ctl._validate_unconfined_args([
                 "--method", "org.freedesktop.DBus.Properties.Get",
                 "org.mpris.MediaPlayer2.Player", "UnauthorizedProp"
             ])
 
-        # 5. Reject unauthorized property or value on Properties.Set
+        # 7. Reject unauthorized property or value on Properties.Set
         with self.assertRaises(SecurityError):
             self.ctl._validate_unconfined_args([
                 "--method", "org.freedesktop.DBus.Properties.Set",

@@ -28,9 +28,21 @@ class TestSecurity(unittest.TestCase):
         self.assertEqual(app_code.id, "code")
 
     def test_get_authorized_app_rejection(self):
-        with self.assertRaises(SecurityError) as ctx:
-            get_authorized_app("unauthorized_app_xyz")
-        self.assertIn("Unauthorized application", str(ctx.exception))
+        unauthorized = [
+            "unauthorized_app_xyz",
+            "/bin/bash",
+            "/bin/sh",
+            "/usr/bin/python3",
+            "sudo",
+            "rm",
+            "systemd-run",
+            "curl",
+        ]
+        for app in unauthorized:
+            with self.subTest(app=app):
+                with self.assertRaises(SecurityError) as ctx:
+                    get_authorized_app(app)
+                self.assertIn("Unauthorized application", str(ctx.exception))
 
     def test_argument_validation_for_disallowed_app(self):
         claude = get_authorized_app("claude-desktop")
@@ -44,6 +56,10 @@ class TestSecurity(unittest.TestCase):
         cleaned = validate_app_arguments(chrome, ["https://gemini.google.com/app"])
         self.assertEqual(cleaned, ["https://gemini.google.com/app"])
 
+        # Legitimate multi-parameter query URLs must be allowed
+        cleaned_query = validate_app_arguments(chrome, ["https://gemini.google.com/app?hl=en&authuser=0"])
+        self.assertEqual(cleaned_query, ["https://gemini.google.com/app?hl=en&authuser=0"])
+
     def test_argument_validation_for_browser_unsafe_url(self):
         chrome = get_authorized_app("google-chrome")
         with self.assertRaises(SecurityError) as ctx:
@@ -52,6 +68,9 @@ class TestSecurity(unittest.TestCase):
 
         with self.assertRaises(SecurityError):
             validate_app_arguments(chrome, ["file:///etc/passwd"])
+
+        with self.assertRaises(SecurityError):
+            validate_app_arguments(chrome, ["data:text/html,<script>alert(1)</script>"])
 
     def test_argument_validation_for_spotify_uri(self):
         spotify = get_authorized_app("spotify")
@@ -63,15 +82,21 @@ class TestSecurity(unittest.TestCase):
         )
         self.assertEqual(cleaned_url, ["https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"])
 
-        # Regression: safe startup flags must be allowed
+        # Legitimate Spotify web URL with query parameters
+        cleaned_url_query = validate_app_arguments(
+            spotify, ["https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc123xyz&context=playlist"]
+        )
+        self.assertEqual(cleaned_url_query, ["https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc123xyz&context=playlist"])
+
+        # Safe startup flags must be allowed
         cleaned_flags = validate_app_arguments(spotify, ["--no-zygote", "--disable-gpu"])
         self.assertEqual(cleaned_flags, ["--no-zygote", "--disable-gpu"])
 
         with self.assertRaises(SecurityError) as ctx:
             validate_app_arguments(spotify, ["malicious; rm -rf /"])
-        self.assertIn("illegal shell metacharacters", str(ctx.exception))
+        self.assertIn("Invalid Spotify URI or flag", str(ctx.exception))
 
-        with self.assertRaises(SecurityError) as ctx:
+        with self.assertRaises(SecurityError):
             validate_app_arguments(spotify, ["--unauthorized-flag"])
         self.assertIn("Invalid Spotify URI or flag", str(ctx.exception))
 
