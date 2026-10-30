@@ -117,6 +117,19 @@ class BilingualIntentClassifier:
         clean, lang = cls.normalize_text(raw_text)
         is_id = (lang == "id")
 
+        # Check if utterance is purely a wake word greeting (e.g. "Hey Maven", "Maven", "Halo Maven")
+        raw_lower = raw_text.lower().strip()
+        wake_match = re.search(r"^\s*(?:(?:hey|hei|halo|hai|ok|okay)\s+)?(?:maven|jarvis)[\s\.,!\?]*$", raw_lower)
+        if wake_match:
+            is_id = any(w in raw_lower for w in ("halo", "hai", "hei"))
+            return {
+                "intent": "wake_acknowledgment",
+                "target": None,
+                "is_id": is_id,
+                "confidence": 1.0,
+                "clean_text": raw_lower,
+            }
+
         if not clean:
             return {"intent": "empty", "target": None, "is_id": is_id, "confidence": 0.0, "clean_text": ""}
 

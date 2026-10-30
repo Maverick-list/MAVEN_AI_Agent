@@ -253,8 +253,21 @@ def handle_spotify_commands(args: argparse.Namespace) -> None:
 
 def handle_browser_commands(args: argparse.Namespace) -> None:
     """Handle 'browser' subcommands."""
+    from maverick.core.profile import is_feature_enabled
+
     sub = args.browser_subcommand
     client = BrowserClient()
+
+    if sub != "status" and not is_feature_enabled("chrome_cdp_automation"):
+        output_result(
+            {
+                "status": "error",
+                "code": "FEATURE_DISABLED_IN_PROFILE",
+                "message": "Chrome CDP automation is disabled in the active 'LIGHT' profile. Switch to DEVELOPER profile via 'maverick-ctl profile developer' or 'maven profile developer'.",
+            },
+            pretty=args.pretty,
+            exit_code=1,
+        )
 
     try:
         if sub == "status":
@@ -512,6 +525,27 @@ def handle_voice_commands(args: argparse.Namespace) -> None:
         ui = VoiceUI()
         ui.run()
 
+    elif sub == "daemon":
+        from maverick.voice.daemon import VoiceDaemon
+        daemon = VoiceDaemon()
+        daemon.run()
+
+
+def handle_profile_commands(args: argparse.Namespace) -> None:
+    """Handle 'profile' subcommands (status, light, developer)."""
+    from maverick.core.profile import get_active_profile, set_active_profile
+    sub = getattr(args, "profile_subcommand", "status")
+
+    if sub == "status":
+        res = get_active_profile()
+        output_result(res, pretty=args.pretty, exit_code=0)
+    elif sub == "light":
+        res = set_active_profile("light")
+        output_result(res, pretty=args.pretty, exit_code=0 if res.get("status") == "success" else 1)
+    elif sub == "developer":
+        res = set_active_profile("developer")
+        output_result(res, pretty=args.pretty, exit_code=0 if res.get("status") == "success" else 1)
+
 
 def main() -> None:
     """Main CLI entry point."""
@@ -652,6 +686,14 @@ def main() -> None:
 
     voice_subs.add_parser("listen", help="Launch interactive voice session UI", parents=[base_parser])
     voice_subs.add_parser("ui", help="Launch interactive voice session UI", parents=[base_parser])
+    voice_subs.add_parser("daemon", help="Run background voice assistant daemon", parents=[base_parser])
+
+    # 9. Profile command parser
+    profile_parser = subparsers.add_parser("profile", help="Manage operational profiles (light / developer)", parents=[base_parser])
+    profile_subs = profile_parser.add_subparsers(dest="profile_subcommand", required=True)
+    profile_subs.add_parser("status", help="Get current active profile and features", parents=[base_parser])
+    profile_subs.add_parser("light", help="Switch to LIGHT mode (everyday laptop use)", parents=[base_parser])
+    profile_subs.add_parser("developer", help="Switch to DEVELOPER mode (CDP, context engine, diagnostics)", parents=[base_parser])
 
     args = parser.parse_args()
 
@@ -671,6 +713,8 @@ def main() -> None:
         handle_activity_commands(args)
     elif args.command == "voice":
         handle_voice_commands(args)
+    elif args.command == "profile":
+        handle_profile_commands(args)
 
 
 if __name__ == "__main__":

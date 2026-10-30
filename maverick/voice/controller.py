@@ -63,7 +63,7 @@ class VoiceController:
 
         # 1. Strip wake word prefix if present ("Maven, ...", "Jarvis, ...")
         cmd_text = re.sub(r"^(?:maven|jarvis)[\s,:]*", "", clean_text, flags=re.IGNORECASE).strip()
-        cmd_lower = cmd_text.lower()
+        cmd_lower = cmd_text.lower() if cmd_text else clean_text.lower()
 
         # 2. Check Local Desktop Actions
         action_result = self._route_desktop_action(cmd_lower, confirmed=confirmed)
@@ -104,6 +104,11 @@ class VoiceController:
 
         if not intent or intent in ("empty", "unhandled"):
             return None
+
+        # 0. Wake Word Acknowledgment
+        if intent == "wake_acknowledgment":
+            resp = "Ya, saya mendengarkan." if is_id else "Yes, I'm listening."
+            return {"status": "success", "action": "wake_acknowledgment", "response": resp}
 
         # 1. Session Mute / Unmute / Stop
         if intent == "mute":
@@ -214,7 +219,7 @@ class VoiceController:
                     if res.get("action") == "already_running":
                         resp = f"{name} sudah berjalan." if is_id else f"{name} is already open."
                         return {"status": "success", "action": "app_launch", "response": resp}
-                    resp = f"Membuka {name}." if is_id else f"Opening {name}."
+                    resp = f"{name} dibuka." if is_id else f"{name} is open."
                     return {"status": "success", "action": "app_launch", "response": resp}
                 elif res.get("status") == "confirmation_required":
                     resp = f"Membuka {app_id} memerlukan konfirmasi. Katakan 'konfirmasi' untuk melanjutkan." if is_id else f"Launching {app_id} requires confirmation. Say 'confirm' to proceed."
@@ -330,7 +335,7 @@ class VoiceController:
         cmd = [
             openclaw_bin,
             "agent",
-            "--model", self.config.model_id,
+            "--agent", "main",
             "--message", prompt,
             "--json",
         ]
@@ -338,38 +343,44 @@ class VoiceController:
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=25.0)
             output = res.stdout.strip()
+            stderr_text = res.stderr.strip()
 
+            parsed_data = None
             if output:
-                # Find valid JSON payload
-                for line in output.splitlines():
-                    if line.startswith("{"):
+                try:
+                    parsed_data = json.loads(output)
+                except Exception:
+                    start = output.find("{")
+                    end = output.rfind("}")
+                    if start != -1 and end != -1 and end > start:
                         try:
-                            data = json.loads(line)
-                            if data.get("ok"):
-                                reply = (
-                                    data.get("result", {}).get("reply")
-                                    or data.get("reply")
-                                    or data.get("message")
-                                    or "Turn completed."
-                                )
-                                return {"status": "success", "response": str(reply).strip()}
-                            elif "error" in data:
-                                err_msg = data["error"].get("message", "")
-                                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                                    return {
-                                        "status": "rate_limited",
-                                        "response": "Google Gemini API reported a temporary quota rate limit.",
-                                    }
-                                return {
-                                    "status": "error",
-                                    "response": f"AI service notice: {err_msg[:80]}.",
-                                }
+                            parsed_data = json.loads(output[start : end + 1])
                         except Exception:
-                            continue
+                            pass
+
+            if parsed_data:
+                if parsed_data.get("ok"):
+                    reply = (
+                        parsed_data.get("result", {}).get("reply")
+                        or parsed_data.get("reply")
+                        or parsed_data.get("message")
+                        or "Turn completed."
+                    )
+                    return {"status": "success", "response": str(reply).strip()}
+                elif "error" in parsed_data:
+                    err_msg = parsed_data["error"].get("message", "")
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+                        return {
+                            "status": "rate_limited",
+                            "response": "Google Gemini API reported a temporary quota rate limit.",
+                        }
+                    return {
+                        "status": "error",
+                        "response": f"AI service notice: {err_msg[:80]}.",
+                    }
 
             # Check stderr for known error codes
-            stderr_text = res.stderr.strip()
-            if "RESOURCE_EXHAUSTED" in stderr_text or "429" in stderr_text:
+            if "RESOURCE_EXHAUSTED" in stderr_text or "429" in stderr_text or "quota" in stderr_text.lower():
                 return {
                     "status": "rate_limited",
                     "response": "Gemini API quota is currently exhausted. Ready for local desktop commands.",

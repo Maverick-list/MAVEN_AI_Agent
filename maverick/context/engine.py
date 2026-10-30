@@ -35,8 +35,11 @@ class ContextEngine:
     def get_context(self) -> Dict[str, Any]:
         """
         Aggregate authorized contextual signals into a structured dictionary.
-        Strictly read-only; records no background surveillance or private user data.
+        Strictly read-only; respects operational profiles (LIGHT mode skips expensive external probes).
         """
+        from maverick.core.profile import is_feature_enabled
+        is_full = is_feature_enabled("full_desktop_context")
+
         os_info = get_os_session_info()
         cpu = get_cpu_usage()
         memory = get_memory_usage()
@@ -44,13 +47,19 @@ class ContextEngine:
         battery = get_battery_status()
         network = get_network_status()
 
-        app_ctx = get_active_application_context()
-        running_apps = app_ctx.get("running_authorized_apps", [])
-        media_info = app_ctx.get("media", {})
-        browser_info = app_ctx.get("automation_browser", {})
-
-        recent_notifications = self.notification_mgr.session_notifications[-3:]
-        recent_actions = self.activity_logger.get_recent_activity(limit=5)
+        if is_full:
+            app_ctx = get_active_application_context()
+            running_apps = app_ctx.get("running_authorized_apps", [])
+            media_info = app_ctx.get("media", {})
+            browser_info = app_ctx.get("automation_browser", {})
+            recent_notifications = self.notification_mgr.session_notifications[-3:]
+            recent_actions = self.activity_logger.get_recent_activity(limit=5)
+        else:
+            running_apps = get_running_authorized_apps()
+            media_info = {"status": "inactive", "player": "none"}
+            browser_info = {"status": "disabled_in_light_mode"}
+            recent_notifications = []
+            recent_actions = []
 
         return {
             "status": "success",
