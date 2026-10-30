@@ -6,17 +6,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 
-# Check current AppArmor profile
-CURRENT_PROFILE=""
-if [[ -r /proc/self/attr/current ]]; then
-    CURRENT_PROFILE="$(cat /proc/self/attr/current 2>/dev/null || true)"
-fi
-
-# If running under an AppArmor subprofile (e.g. 'vscode (unconfined)'),
-# transition to clean 'unconfined' so Snap AppArmor policies (such as Spotify's MPRIS slot)
-# allow D-Bus method calls.
-if [[ "$CURRENT_PROFILE" != "unconfined" && "$CURRENT_PROFILE" != "" ]] && command -v aa-exec >/dev/null 2>&1; then
-    exec aa-exec -p unconfined /usr/bin/python3 -m maverick.cli "$@"
-fi
+# Note: In accordance with Phase 2.2 security audit, the CLI process itself is NOT
+# de-confined here. AppArmor confinement is preserved for the entire runtime.
+# Only specific D-Bus method calls targeting snap.spotify.spotify are isolated and
+# mediated in maverick/media/spotify.py under strict argument validation.
 
 exec /usr/bin/python3 -m maverick.cli "$@"

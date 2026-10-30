@@ -176,5 +176,54 @@ class TestSpotifyController(unittest.TestCase):
         mock_unconfined.assert_called_once_with(["--method", "org.mpris.MediaPlayer2.Player.Play"])
 
 
+    def test_unconfined_fallback_boundaries(self):
+        # 1. Reject invalid destination
+        with self.assertRaises(SecurityError):
+            SpotifyController(dest="org.freedesktop.systemd1")
+
+        with self.assertRaises(SecurityError):
+            SpotifyController(dest="org.mpris.MediaPlayer2; rm -rf /")
+
+        # 2. Reject unapproved method
+        with self.assertRaises(SecurityError):
+            self.ctl._validate_unconfined_args(["--method", "org.freedesktop.DBus.Peer.Ping"])
+
+        with self.assertRaises(SecurityError):
+            self.ctl._validate_unconfined_args(["--method", "com.malicious.Execute"])
+
+        # 3. Reject extra arguments on parameterless method
+        with self.assertRaises(SecurityError):
+            self.ctl._validate_unconfined_args(["--method", "org.mpris.MediaPlayer2.Player.Play", "extra_arg"])
+
+        # 4. Reject unauthorized property on Properties.Get
+        with self.assertRaises(SecurityError):
+            self.ctl._validate_unconfined_args([
+                "--method", "org.freedesktop.DBus.Properties.Get",
+                "org.mpris.MediaPlayer2.Player", "UnauthorizedProp"
+            ])
+
+        # 5. Reject unauthorized property or value on Properties.Set
+        with self.assertRaises(SecurityError):
+            self.ctl._validate_unconfined_args([
+                "--method", "org.freedesktop.DBus.Properties.Set",
+                "org.mpris.MediaPlayer2.Player", "PlaybackStatus", "<'Playing'>"
+            ])
+
+        with self.assertRaises(SecurityError):
+            self.ctl._validate_unconfined_args([
+                "--method", "org.freedesktop.DBus.Properties.Set",
+                "org.mpris.MediaPlayer2.Player", "Volume", "<@d 999.0>"
+            ])
+
+    @patch("subprocess.run")
+    def test_unconfined_dbus_timeout_scenario(self, mock_subrun):
+        import subprocess
+        mock_subrun.side_effect = subprocess.TimeoutExpired(cmd=["gdbus"], timeout=5.0)
+
+        with self.assertRaises(SpotifyControllerError) as ctx:
+            self.ctl._run_unconfined_gdbus(["--method", "org.mpris.MediaPlayer2.Player.Play"])
+        self.assertIn("failed", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

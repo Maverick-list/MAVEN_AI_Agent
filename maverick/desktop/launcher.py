@@ -124,7 +124,19 @@ def launch_app(
             "app": check_app_status(app.id),
         }
 
-    # 2. Enforce confirmation if required
+    # 2. Prevent duplicate launches for running applications
+    running_pids = get_running_pids(app)
+    if running_pids and not args:
+        return {
+            "status": "success",
+            "action": "already_running",
+            "target": app.id,
+            "display_name": app.display_name,
+            "pids": running_pids,
+            "message": f"{app.display_name} is already running (PID: {running_pids[0]}).",
+        }
+
+    # 3. Enforce confirmation if required
     if app.requires_confirmation:
         verify_confirmation(
             action="launch",
@@ -134,11 +146,11 @@ def launch_app(
             reason=f"Launching {app.display_name} has external desktop or browser consequences.",
         )
 
-    # 3. Validate arguments (apply default_args if no custom args supplied)
+    # 4. Validate arguments (apply default_args if no custom args supplied)
     effective_args = list(app.default_args) if (not args and app.default_args) else (args or [])
     sanitized_args = validate_app_arguments(app, effective_args)
 
-    # 4. Prepare execution environment (Wayland & D-Bus awareness)
+    # 5. Prepare execution environment (Wayland & D-Bus awareness)
     env = os.environ.copy()
     uid = os.getuid()
     env.setdefault("DISPLAY", ":0")

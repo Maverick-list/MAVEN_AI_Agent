@@ -57,9 +57,10 @@ def validate_app_arguments(app: AuthorizedApp, args: Optional[List[str]] = None)
             raise SecurityError(f"Argument must be a string, got {type(arg).__name__}")
 
         val = arg.strip()
-        # Disallow null bytes or dangerous control characters
-        if "\x00" in val or "\n" in val or "\r" in val:
-            raise SecurityError("Argument contains illegal control characters.")
+        # Disallow null bytes, newlines, control characters, and shell command metacharacters
+        dangerous_chars = (";", "&", "|", "`", "$", "\x00", "\n", "\r")
+        if any(c in val for c in dangerous_chars):
+            raise SecurityError(f"Argument contains illegal shell metacharacters: '{val}'")
 
         # Application-specific validation
         if app.id in ("google-chrome", "firefox"):

@@ -69,10 +69,11 @@ class TestSecurity(unittest.TestCase):
 
         with self.assertRaises(SecurityError) as ctx:
             validate_app_arguments(spotify, ["malicious; rm -rf /"])
-        self.assertIn("Invalid Spotify URI or flag", str(ctx.exception))
+        self.assertIn("illegal shell metacharacters", str(ctx.exception))
 
-        with self.assertRaises(SecurityError):
+        with self.assertRaises(SecurityError) as ctx:
             validate_app_arguments(spotify, ["--unauthorized-flag"])
+        self.assertIn("Invalid Spotify URI or flag", str(ctx.exception))
 
     def test_argument_validation_for_code_path(self):
         code = get_authorized_app("code")
@@ -90,6 +91,39 @@ class TestSecurity(unittest.TestCase):
         with self.assertRaises(SecurityError) as ctx:
             validate_app_arguments(code, ["--install-extension"])
         self.assertIn("Option flag '--install-extension' is not allowed", str(ctx.exception))
+
+    def test_command_injection_rejection(self):
+        spotify = get_authorized_app("spotify")
+        dangerous_payloads = [
+            "spotify:track:123; rm -rf /",
+            "spotify:track:123 && id",
+            "spotify:track:123 | nc localhost 80",
+            "spotify:track:123`whoami`",
+            "spotify:track:123$(id)",
+            "spotify:track:123\x00evil",
+            "spotify:track:123\nevil",
+            "spotify:track:123\revil",
+        ]
+        for payload in dangerous_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(SecurityError):
+                    validate_app_arguments(spotify, [payload])
+
+    def test_spotify_unexpected_uris(self):
+        spotify = get_authorized_app("spotify")
+        invalid_uris = [
+            "http://open.spotify.com/track/123",  # Insecure HTTP
+            "ftp://open.spotify.com/track/123",
+            "spotify:exe:malicious",              # Invalid type
+            "spotify:../../etc/passwd",           # Path traversal attempt
+            "javascript:alert('pwned')",
+            "data:text/html,<script>alert(1)</script>",
+            "spotify:track:123?extra=bad&injection=true",
+        ]
+        for uri in invalid_uris:
+            with self.subTest(uri=uri):
+                with self.assertRaises(SecurityError):
+                    validate_app_arguments(spotify, [uri])
 
     def test_confirmation_gating(self):
         # When requires_confirmation is True and is_confirmed is False

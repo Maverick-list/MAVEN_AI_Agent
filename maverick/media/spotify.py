@@ -13,7 +13,7 @@ from maverick.core.config import (
     DBUS_CORE_PATH,
     DBUS_MPRIS_PREFIX,
 )
-from maverick.core.security import SecurityError
+from maverick.core.security import SecurityError, _SAFE_SPOTIFY_URI_REGEX
 
 try:
     import gi
@@ -36,7 +36,22 @@ class PlayerNotRunningError(SpotifyControllerError):
 class SpotifyController:
     """Controller for Spotify and MPRIS-compliant media players via D-Bus."""
 
+    ALLOWED_MPRIS_METHODS = {
+        "org.mpris.MediaPlayer2.Player.Play",
+        "org.mpris.MediaPlayer2.Player.Pause",
+        "org.mpris.MediaPlayer2.Player.PlayPause",
+        "org.mpris.MediaPlayer2.Player.Next",
+        "org.mpris.MediaPlayer2.Player.Previous",
+        "org.mpris.MediaPlayer2.Player.Stop",
+        "org.mpris.MediaPlayer2.Player.OpenUri",
+        "org.freedesktop.DBus.Properties.Get",
+        "org.freedesktop.DBus.Properties.Set",
+    }
+
     def __init__(self, dest: str = SPOTIFY_DBUS_DEST):
+        # Validate that destination is strictly a safe MPRIS D-Bus name
+        if not re.match(r"^org\.mpris\.MediaPlayer2\.[a-zA-Z0-9_.-]+$", dest):
+            raise SecurityError(f"Invalid MPRIS destination: '{dest}'")
         self.dest = dest
 
     def _get_session_bus(self):
@@ -45,11 +60,64 @@ class SpotifyController:
             raise SpotifyControllerError("GNOME Gio repository is not available.")
         return Gio.bus_get_sync(Gio.BusType.SESSION, None)
 
+    def _validate_unconfined_args(self, args: List[str]) -> None:
+        """
+        Enforce strict allowlisting on all arguments passed to unconfined gdbus fallback.
+        Only verified MPRIS methods and tightly bounded parameters are permitted.
+        """
+        if not args or len(args) < 2 or args[0] != "--method":
+            raise SecurityError(f"Malformed unconfined gdbus arguments: {args}")
+
+        method = args[1]
+        if method not in self.ALLOWED_MPRIS_METHODS:
+            raise SecurityError(f"Method '{method}' is not permitted for unconfined execution.")
+
+        # Parameterless playback controls
+        if method in (
+            "org.mpris.MediaPlayer2.Player.Play",
+            "org.mpris.MediaPlayer2.Player.Pause",
+            "org.mpris.MediaPlayer2.Player.PlayPause",
+            "org.mpris.MediaPlayer2.Player.Next",
+            "org.mpris.MediaPlayer2.Player.Previous",
+            "org.mpris.MediaPlayer2.Player.Stop",
+        ):
+            if len(args) != 2:
+                raise SecurityError(f"Parameterless method '{method}' cannot accept extra arguments: {args}")
+
+        # OpenUri validation
+        elif method == "org.mpris.MediaPlayer2.Player.OpenUri":
+            if len(args) != 3 or not _SAFE_SPOTIFY_URI_REGEX.match(args[2]):
+                uri_val = args[2] if len(args) > 2 else ""
+                raise SecurityError(f"Invalid or unsafe URI argument for OpenUri: '{uri_val}'")
+
+        # Property Get validation
+        elif method == "org.freedesktop.DBus.Properties.Get":
+            if len(args) != 4:
+                raise SecurityError(f"Properties.Get requires exactly 2 arguments (iface, prop): {args}")
+            iface, prop = args[2], args[3]
+            if iface not in (MPRIS_PLAYER_INTERFACE, "org.mpris.MediaPlayer2"):
+                raise SecurityError(f"Unauthorized interface for Properties.Get: '{iface}'")
+            if prop not in ("PlaybackStatus", "Volume", "Metadata", "Position"):
+                raise SecurityError(f"Unauthorized property for Properties.Get: '{prop}'")
+
+        # Property Set validation (Volume only)
+        elif method == "org.freedesktop.DBus.Properties.Set":
+            if len(args) != 5:
+                raise SecurityError(f"Properties.Set requires exactly 3 arguments (iface, prop, val): {args}")
+            iface, prop, val = args[2], args[3], args[4]
+            if iface != MPRIS_PLAYER_INTERFACE or prop != "Volume":
+                raise SecurityError(f"Only Volume property can be modified via Properties.Set, got '{iface}.{prop}'")
+            if not re.match(r"^<@d (0(\.[0-9]+)?|1(\.0+)?)>$", val):
+                raise SecurityError(f"Invalid volume variant format: '{val}'")
+
     def _run_unconfined_gdbus(self, args: List[str]) -> str:
         """
         Execute gdbus call with unconfined credentials when AppArmor subprofiles
         (like vscode unconfined) restrict direct D-Bus access to Snap MPRIS slots.
+        Strictly sandboxed to allowed MPRIS operations only.
         """
+        self._validate_unconfined_args(args)
+
         base_cmd = [
             "/usr/bin/gdbus",
             "call",

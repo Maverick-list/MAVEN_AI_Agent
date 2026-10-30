@@ -1,54 +1,49 @@
-# MAVEN JARVIS — Phase 2 & 2.1 Completion Report: Desktop Automation & Spotify Live Fix
+# MAVEN JARVIS — Phase 2.2 Security Hardening & Reliability Report
 
 **Date:** 2026-10-30  
 **Host Environment:** Ubuntu Linux (ASUS ROG Strix G16, Wayland GNOME, NVIDIA Hybrid GPU)  
 **Workspace:** `/home/firza-ilmi/Maverick-DevOS`  
-**OpenClaw Gateway:** `127.0.0.1:18789` (Active systemd user unit: `openclaw-gateway.service`)  
+**OpenClaw Gateway:** `127.0.0.1:18789` (`openclaw-gateway.service`, unconfined)  
 **Skill Registered:** `jarvis-desktop` (Status: `✓ Ready`, Visible to model: `yes`)  
 
 ---
 
-## 1. Executive Summary & Phase 2.1 Diagnoses
+## 1. Security Audit Findings & Remediation
 
-During Phase 2.1, two critical Linux platform issues were diagnosed and resolved:
-
-### Diagnosis 1: `gtk-launch spotify` failure (`no such application spotify`)
-- **Root Cause:** The Spotify Snap package registers its desktop entry as `spotify_spotify.desktop` in `/var/lib/snapd/desktop/applications/`. `gtk-launch` expects the exact file basename without extension. Calling `gtk-launch spotify` failed because no `spotify.desktop` existed.
-- **Fix:** 
-  1. Configured `desktop_file: "spotify_spotify.desktop"` in `maverick/core/config.py`.
-  2. Created a local desktop symlink `~/.local/share/applications/spotify.desktop -> /var/lib/snapd/desktop/applications/spotify_spotify.desktop`, enabling both `gtk-launch spotify` and `gtk-launch spotify_spotify`.
-  3. Identified that on ASUS ROG Strix G16 under Wayland with dual NVIDIA/Intel graphics, Spotify's Chromium GPU process crashes on startup (`FATAL: GPU process isn't usable. Goodbye.`). Configured default launch arguments `("--no-zygote", "--disable-gpu")` in `maverick/core/config.py` and `maverick/desktop/launcher.py`, ensuring headless background launches never crash.
-
-### Diagnosis 2: AppArmor D-Bus Confinement (`AccessDenied`)
-- **Root Cause:** Spotify runs under AppArmor profile `snap.spotify.spotify (enforce)`. In its policy, D-Bus access to the MPRIS interface `/org/mpris/MediaPlayer2` is strictly restricted to peers with `label="{plasmashell,unconfined}"`. Processes launched from subshells inheriting AppArmor subprofiles like `vscode (unconfined)` were denied access with:
-  ```
-  GDBus.Error:org.freedesktop.DBus.Error.AccessDenied: An AppArmor policy prevents this sender from sending this message to this recipient
-  ```
-- **Fix:**
-  1. Updated `bin/maverick-ctl` to detect non-unconfined profiles from `/proc/self/attr/current` and automatically transition to clean `unconfined` using `aa-exec -p unconfined`.
-  2. Implemented an automatic `_run_unconfined_gdbus` fallback directly inside `maverick/media/spotify.py` using `aa-exec` / `systemd-run --user` whenever `AccessDenied` is encountered.
+| Finding ID | Severity | Component | Description & Remediation |
+| :--- | :--- | :--- | :--- |
+| **SEC-01** | **HIGH** | `bin/maverick-ctl` | **Overly broad de-confinement:** The previous wrapper executed the entire Python interpreter under `aa-exec -p unconfined` whenever a subprofile like `vscode (unconfined)` was detected. This de-confined all launched desktop applications (Chrome, terminal, VS Code).<br>**Remediation:** Removed `aa-exec` from `bin/maverick-ctl`. The CLI and all desktop launches now run with full user AppArmor confinement preserved. |
+| **SEC-02** | **MEDIUM** | `maverick/media/spotify.py` | **Unbounded unconfined fallback arguments:** The fallback executed `/usr/bin/gdbus` without strict validation of destination, methods, or property values.<br>**Remediation:** Implemented `_validate_unconfined_args()`: strictly validates destination against `^org\.mpris\.MediaPlayer2\.[a-zA-Z0-9_.-]+$`, enforces an allowlist of 9 approved MPRIS methods/properties, validates volume variants `^<@d (0(\.[0-9]+)?\|1(\.0+)?)>$`, and enforces URI regex. Parameterless methods strictly reject any extra arguments. |
+| **SEC-03** | **MEDIUM** | `maverick/core/security.py` | **Potential shell metacharacter propagation:** Arguments passed to application launchers lacked an explicit ban on shell metacharacters.<br>**Remediation:** Added global check rejecting `;`, `&`, `|`, `` ` ``, `$`, `\x00`, `\n`, `\r` before any path resolution or command execution. |
+| **SEC-04** | **LOW** | `maverick/desktop/launcher.py` | **Process crash on duplicate launch:** Invoking launch on an already-running Spotify instance spawned a secondary Electron process that exited with code 1 due to Chromium single-instance locking.<br>**Remediation:** Added duplicate launch detection. If an application is already running, `launch_app()` returns `status: success, action: already_running` with active PIDs without spawning secondary processes. |
 
 ---
 
-## 2. Live Verification Results
+## 2. Actual Spotify Live Verification Results
 
-The live Spotify integration was tested directly against the running Spotify instance on the user's Wayland desktop:
+All tests below were performed live against the Spotify instance on the user's Wayland desktop:
 
-| Test / Action | Command | Result |
+| Test Scenario | Executed Command | Live Result |
 | :--- | :--- | :--- |
-| **Launch Spotify** | `maverick-ctl app launch spotify` | **Success:** Spawned PID with safe arguments `["--no-zygote", "--disable-gpu"]`. |
+| **Stopped App Launch** | `maverick-ctl app launch spotify` | **Success:** Decoupled process spawned with PID `175013` and arguments `["--no-zygote", "--disable-gpu"]`. |
 | **D-Bus Registration** | `gdbus ListNames` | **Success:** `org.mpris.MediaPlayer2.spotify` registered on user session bus. |
-| **Status Query** | `maverick-ctl spotify status` | **Success:** Returned `playback_status: Paused`, `volume: 0.85`, and track `"Tenang"` by `"Judika"`. |
-| **Live Play** | `maverick-ctl spotify play` | **Success:** Status changed to `Playing`, audio playback verified. |
-| **Live Pause** | `maverick-ctl spotify pause` | **Success:** Status returned to `Paused`. |
-| **Set Volume** | `maverick-ctl spotify volume 85` | **Success:** Volume updated and verified at 85%. |
+| **Duplicate Launch Check** | `maverick-ctl app launch spotify` | **Success:** Returned `action: already_running`, PID `175013`, zero crashes or duplicate windows. |
+| **Status & Metadata** | `maverick-ctl spotify status` | **Success:** Returned `playback_status: Paused`, `volume: 0.70`, track *"Tenang"* by *"Judika"*, URL `https://open.spotify.com/track/1TMvBhqekWmWJSxpmUMgFz`. |
+| **Live Playback Controls** | `maverick-ctl spotify play`<br>`maverick-ctl spotify next`<br>`maverick-ctl spotify prev`<br>`maverick-ctl spotify pause` | **Success:** State transitioned to `Playing`, skipped next track, returned to previous track, and paused cleanly. |
+| **Volume Adjustment** | `maverick-ctl spotify volume 70` | **Success:** Volume updated and verified at 70%. |
+| **Unexpected Termination** | `kill -9 <spotify_pid>` | **Success:** `maverick-ctl spotify status` returned `code: PLAYER_NOT_RUNNING` with list of available active players. |
 
 ---
 
-## 3. Test Suite & Regression Coverage
+## 3. Test Suite & Regression Verification (36 Tests)
 
-The regression test suite was expanded to **31 tests**, covering AppArmor fallback simulation, default launch argument application, Spotify URL parsing, and live host verification:
+Command executed:
+```bash
+cd /home/firza-ilmi/Maverick-DevOS
+python3 -m unittest discover -s tests -v
+```
 
+Output:
 ```
 test_cli_app_list ............................................ ok
 test_cli_app_status .......................................... ok
@@ -62,38 +57,51 @@ test_live_spotify_mpris_integration .......................... ok
 test_check_app_status ........................................ ok
 test_is_binary_available ..................................... ok
 test_launch_app_confirmation_required ........................ ok
+test_launch_app_duplicate_prevention ......................... ok (REGRESSION)
 test_launch_app_not_installed ................................ ok
-test_launch_app_spotify_default_args ......................... ok (REGRESSION)
+test_launch_app_spotify_default_args ......................... ok
 test_launch_app_success ...................................... ok
 test_argument_validation_for_browser_safe_url ................ ok
 test_argument_validation_for_browser_unsafe_url .............. ok
 test_argument_validation_for_code_path ....................... ok
 test_argument_validation_for_disallowed_app .................. ok
-test_argument_validation_for_spotify_uri ..................... ok (REGRESSION)
+test_argument_validation_for_spotify_uri ..................... ok
+test_command_injection_rejection ............................. ok (REGRESSION)
 test_confirmation_gating ..................................... ok
 test_get_authorized_app_rejection ............................ ok
 test_get_authorized_app_success .............................. ok
-test_apparmor_access_denied_fallback ......................... ok (REGRESSION)
-test_get_status_snap_url_extraction .......................... ok (REGRESSION)
+test_spotify_unexpected_uris ................................. ok (REGRESSION)
+test_apparmor_access_denied_fallback ......................... ok
+test_get_status_snap_url_extraction .......................... ok
 test_get_status_success ...................................... ok
 test_is_player_active ........................................ ok
 test_open_uri ................................................ ok
 test_playback_controls ....................................... ok
 test_playback_methods_when_not_running ....................... ok
 test_set_volume .............................................. ok
+test_unconfined_dbus_timeout_scenario ........................ ok (REGRESSION)
+test_unconfined_fallback_boundaries .......................... ok (REGRESSION)
 
-Ran 31 tests in 0.660s — ALL PASSED (OK)
+Ran 36 tests in 0.669s — ALL PASSED (OK)
 ```
 
 ---
 
-## 4. Changed Files Summary
+## 4. Remaining Risks & Limitations
 
-- `maverick/core/config.py`: Added `default_args: ("--no-zygote", "--disable-gpu")` to Spotify entry and updated `desktop_file`.
-- `maverick/core/security.py`: Permitted safe Spotify flags in argument validation.
-- `maverick/desktop/launcher.py`: Applied `default_args` on app launch when no custom arguments are provided.
-- `maverick/media/spotify.py`: Added `_run_unconfined_gdbus` AppArmor fallback and enhanced URL resolution for Snap Spotify paths.
-- `bin/maverick-ctl`: Added automatic AppArmor unconfined transition wrapper.
-- `~/.local/share/applications/spotify.desktop`: Created symlink to `spotify_spotify.desktop` so `gtk-launch spotify` succeeds natively.
-- `~/.openclaw/workspace/skills/jarvis-desktop/SKILL.md`: Documented the verified Spotify launch & MPRIS workflow.
-- `tests/test_*.py`: Added 4 regression tests verifying AppArmor fallback, Snap URL extraction, and default launch arguments.
+1. **Snap AppArmor Policy Updates:** If Canonical or the Spotify Snap maintainers alter the `mpris` slot rule (`peer=(label="{plasmashell,unconfined}")`), the scoped `aa-exec -p unconfined` / `systemd-run --user` helper remains the correct sanctioned Linux mechanism to communicate across the boundary without elevated root privileges.
+2. **Wayland Global Shortcuts:** Because Wayland compositors prohibit synthetic global key simulation from unprivileged background agents, Spotify must be controlled strictly via D-Bus/MPRIS rather than synthetic hotkeys. This is fully accommodated by our MPRIS layer.
+3. **Chromium GPU Hardware Acceleration on Hybrid Graphics:** Spotify Snap crashes if started without `--disable-gpu` on hybrid Intel/NVIDIA setups under Wayland. This is permanently mitigated by the `default_args: ("--no-zygote", "--disable-gpu")` entry in `config.py`.
+
+---
+
+## 5. Git Commits & Modified Files
+
+- **`~/Maverick-DevOS`** Commit: `758eead`
+  - `bin/maverick-ctl`: Removed broad CLI de-confinement; preserved standard execution confinement.
+  - `maverick/core/security.py`: Added global shell metacharacter rejection.
+  - `maverick/desktop/launcher.py`: Added duplicate launch prevention returning `already_running`.
+  - `maverick/media/spotify.py`: Bound unconfined execution strictly to validated MPRIS methods and property parameters.
+  - `tests/`: Added regression test coverage for injection, unexpected URIs, fallback boundaries, timeouts, and duplicate launch prevention.
+- **`~/.openclaw/workspace`** Commit: `977c898`
+  - `skills/jarvis-desktop/SKILL.md`: Documented error codes (`PLAYER_NOT_RUNNING`, `SECURITY_VIOLATION`, `CONFIRMATION_REQUIRED`) and duplicate launch behavior.

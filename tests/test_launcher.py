@@ -81,10 +81,26 @@ class TestLauncher(unittest.TestCase):
 
 
     @patch("maverick.desktop.launcher.is_binary_available")
+    @patch("maverick.desktop.launcher.get_running_pids")
+    @patch("subprocess.Popen")
+    def test_launch_app_duplicate_prevention(self, mock_popen, mock_pids, mock_avail):
+        mock_avail.return_value = True
+        mock_pids.return_value = [171614]  # Already running
+
+        res = launch_app("spotify")
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(res["action"], "already_running")
+        self.assertEqual(res["pids"], [171614])
+        # Crucial guarantee: subprocess.Popen is NOT called when duplicate is prevented
+        mock_popen.assert_not_called()
+
+    @patch("maverick.desktop.launcher.is_binary_available")
+    @patch("maverick.desktop.launcher.get_running_pids")
     @patch("subprocess.Popen")
     @patch("time.sleep")
-    def test_launch_app_spotify_default_args(self, mock_sleep, mock_popen, mock_avail):
+    def test_launch_app_spotify_default_args(self, mock_sleep, mock_popen, mock_pids, mock_avail):
         mock_avail.return_value = True
+        mock_pids.return_value = []  # Not currently running
         mock_proc = MagicMock()
         mock_proc.pid = 8888
         mock_proc.poll.return_value = None
