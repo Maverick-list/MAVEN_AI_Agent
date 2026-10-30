@@ -85,7 +85,7 @@ class VoiceController:
             )
             return action_result
 
-        # 3. Conversational query: forward to OpenClaw (Gemini 2.5 Flash)
+        # 3. Conversational query: forward to OpenClaw (Gemini 2.5 Flash primary + configured fallbacks)
         if self.config.enable_openclaw_fallback:
             ai_result = self._query_openclaw(cmd_text)
             self.logger.log_action(
@@ -93,7 +93,10 @@ class VoiceController:
                 target=cmd_text,
                 status=ai_result.get("status", "success"),
                 confirmed=False,
-                details={"model": self.config.model_id},
+                details={
+                    "model": ai_result.get("model_used") or self.config.model_id,
+                    "configured_primary": self.config.model_id,
+                },
             )
             return ai_result
 
@@ -343,10 +346,53 @@ class VoiceController:
 
         return None
 
+    @staticmethod
+    def _extract_openclaw_reply(parsed_data: Dict[str, Any], default_model: str) -> Optional[Tuple[str, str]]:
+        """
+        Extract (reply_text, model_used) from OpenClaw JSON responses.
+        Supports both OpenClaw 2026.10+ schema:
+          {"status": "ok", "result": {"payloads": [{"text": "..."}], "meta": {"agentMeta": {"provider": "...", "model": "..."}}}}
+        and legacy/compact schema:
+          {"ok": true, "result": {"reply": "..."}}
+        """
+        is_ok = (parsed_data.get("ok") is True) or (parsed_data.get("status") == "ok" and "error" not in parsed_data)
+        if not is_ok:
+            return None
+
+        res_obj = parsed_data.get("result")
+        if not isinstance(res_obj, dict):
+            res_obj = {}
+
+        model_used = default_model
+        agent_meta = res_obj.get("meta", {}).get("agentMeta", {}) if isinstance(res_obj.get("meta"), dict) else {}
+        if isinstance(agent_meta, dict) and agent_meta.get("model"):
+            prov = str(agent_meta.get("provider") or "").strip()
+            mod = str(agent_meta.get("model") or "").strip()
+            model_used = f"{prov}/{mod}" if prov and "/" not in mod else mod
+
+        payloads = res_obj.get("payloads")
+        if isinstance(payloads, list) and payloads:
+            texts = [
+                str(p.get("text")).strip()
+                for p in payloads
+                if isinstance(p, dict) and p.get("text") and str(p.get("text")).strip()
+            ]
+            if texts:
+                return ("\n".join(texts), model_used)
+
+        reply = (
+            res_obj.get("reply")
+            or parsed_data.get("reply")
+            or parsed_data.get("message")
+            or "Turn completed."
+        )
+        return (str(reply).strip(), model_used)
+
     def _query_openclaw(self, prompt: str) -> Dict[str, Any]:
         """
-        Dispatch conversational turn to OpenClaw Gateway using Google Gemini 2.5 Flash.
-        Handles API errors, rate limits (429), and timeouts gracefully.
+        Dispatch conversational turn to OpenClaw Gateway using Google Gemini 2.5 Flash
+        (with automatic OpenClaw fallback cascade).
+        Handles API errors, rate limits (429), model availability, and timeouts gracefully.
         """
         openclaw_bin = shutil.which("openclaw")
         if not openclaw_bin:
@@ -364,7 +410,7 @@ class VoiceController:
         ]
 
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=25.0)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=45.0)
             output = res.stdout.strip()
             stderr_text = res.stderr.strip()
 
@@ -381,25 +427,38 @@ class VoiceController:
                         except Exception:
                             pass
 
-            if parsed_data:
-                if parsed_data.get("ok"):
-                    reply = (
-                        parsed_data.get("result", {}).get("reply")
-                        or parsed_data.get("reply")
-                        or parsed_data.get("message")
-                        or "Turn completed."
-                    )
-                    return {"status": "success", "response": str(reply).strip()}
-                elif "error" in parsed_data:
-                    err_msg = parsed_data["error"].get("message", "")
-                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+            if isinstance(parsed_data, dict):
+                extracted = self._extract_openclaw_reply(parsed_data, self.config.model_id)
+                if extracted is not None:
+                    reply_text, model_used = extracted
+                    return {
+                        "status": "success",
+                        "response": reply_text,
+                        "model_used": model_used,
+                    }
+                if "error" in parsed_data:
+                    err_obj = parsed_data["error"]
+                    err_msg = err_obj.get("message", "") if isinstance(err_obj, dict) else str(err_obj)
+                    err_lower = err_msg.lower()
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_lower:
                         return {
                             "status": "rate_limited",
                             "response": "Google Gemini API reported a temporary quota rate limit.",
                         }
+                    if "NOT_FOUND" in err_msg or "model was not found" in err_lower or "model_not_found" in err_lower:
+                        return {
+                            "status": "model_not_found",
+                            "response": "The requested AI model is currently unavailable on the active provider.",
+                        }
+                    if "503" in err_msg or "UNAVAILABLE" in err_msg or "overloaded" in err_lower or "high demand" in err_lower:
+                        return {
+                            "status": "overloaded",
+                            "response": "The AI service is experiencing temporary high demand. Please try again shortly.",
+                        }
+                    clean_err = re.sub(r"\s*\|\s*[A-Z_]+\s*$", "", err_msg).strip()
                     return {
                         "status": "error",
-                        "response": f"AI service notice: {err_msg[:80]}.",
+                        "response": f"AI service notice: {clean_err[:80]}.",
                     }
 
             # Check stderr for known error codes
@@ -407,6 +466,11 @@ class VoiceController:
                 return {
                     "status": "rate_limited",
                     "response": "Gemini API quota is currently exhausted. Ready for local desktop commands.",
+                }
+            if "NOT_FOUND" in stderr_text or "model was not found" in stderr_text.lower():
+                return {
+                    "status": "model_not_found",
+                    "response": "The requested AI model is currently unavailable on the active provider.",
                 }
 
             return {

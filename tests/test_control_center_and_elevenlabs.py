@@ -376,6 +376,57 @@ class TestControlCenterAndElevenLabs(unittest.TestCase):
 
         self.assertEqual(len(fallback_tts.spoken_texts), 12)
 
+    @patch("subprocess.run")
+    def test_openclaw_v2026_payload_and_model_not_found_sanitization(self, mock_run) -> None:
+        """Verify OpenClaw 2026.10+ payloads[] JSON parsing and clean NOT_FOUND handling."""
+        from maverick.voice.stt import WhisperCppSTTProvider
+
+        ctl = VoiceController(VoiceConfig())
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "runId": "test-run-1",
+                    "status": "ok",
+                    "summary": "completed",
+                    "result": {
+                        "payloads": [{"text": "Systems nominal, Sir.", "mediaUrl": None}],
+                        "meta": {"agentMeta": {"provider": "google", "model": "gemini-2.5-flash"}},
+                    },
+                }
+            ),
+            stderr="",
+        )
+        ok_res = ctl._query_openclaw("Status report")
+        self.assertEqual(ok_res["status"], "success")
+        self.assertEqual(ok_res["response"], "Systems nominal, Sir.")
+        self.assertEqual(ok_res["model_used"], "google/gemini-2.5-flash")
+
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "ok": False,
+                    "origin": "gateway",
+                    "error": {
+                        "type": "cli_error",
+                        "message": "This model was not found. Choose another model in the Control UI. | NOT_FOUND",
+                    },
+                }
+            ),
+            stderr="",
+        )
+        err_res = ctl._query_openclaw("Hello")
+        self.assertEqual(err_res["status"], "model_not_found")
+        self.assertNotIn("| NOT_FOUND", err_res["response"])
+        self.assertNotIn("Control UI", err_res["response"])
+
+        # Whisper noise-hallucination filter checks
+        self.assertTrue(WhisperCppSTTProvider.is_noise_hallucination("오케이 이리 와구!"))
+        self.assertTrue(WhisperCppSTTProvider.is_noise_hallucination("Jangan, jangan, jangan, jangan, jangan."))
+        self.assertFalse(WhisperCppSTTProvider.is_noise_hallucination("Hello Maven, how are you today?"))
+        self.assertFalse(WhisperCppSTTProvider.is_noise_hallucination("Tolong jelaskan status proyek hari ini."))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,43 @@ class WhisperCppSTTProvider(STTProvider):
         self.threads = self.config.whisper_threads
         self.prompt = prompt
 
+    _HALLUCINATION_PHRASES = (
+        "thank you for watching",
+        "thanks for watching",
+        "subtitles by",
+        "amara.org",
+        "terima kasih telah menonton",
+        "jangan lupa subscribe",
+    )
+    _REPEAT_LOOP_RE = re.compile(r"\b([a-zA-Z]{2,})(?:[\s,.\-!?;:]+\1\b){3,}", re.IGNORECASE)
+
+    @classmethod
+    def is_noise_hallucination(cls, text: str) -> bool:
+        """
+        Detect Whisper ggml-tiny ambient-noise hallucinations:
+        - Non-Latin script dominance (e.g. Hangul, Cyrillic, CJK, Arabic on room noise with -l auto)
+        - 4+ identical consecutive word loops (e.g. 'Jangan, jangan, jangan, jangan')
+        - Known Whisper subtitle/outro watermarks on silence/music
+        """
+        if not text or not text.strip():
+            return True
+        stripped = text.strip()
+        lower = stripped.lower()
+        for phrase in cls._HALLUCINATION_PHRASES:
+            if phrase in lower:
+                return True
+        if cls._REPEAT_LOOP_RE.search(stripped):
+            return True
+        # Maven supports English and Indonesian (Latin alphabet). Reject transcripts
+        # where letters are predominantly outside Basic/Extended Latin (U+0000..U+024F).
+        alpha_chars = [ch for ch in stripped if ch.isalpha()]
+        if not alpha_chars:
+            return True
+        latin_chars = [ch for ch in alpha_chars if ord(ch) <= 0x024F]
+        if (len(latin_chars) / len(alpha_chars)) < 0.75:
+            return True
+        return False
+
     def is_available(self) -> bool:
         """Check if whisper-cli executable and model file are present."""
         return os.path.isfile(self.whisper_bin) and os.access(self.whisper_bin, os.X_OK) and os.path.isfile(self.whisper_model)
@@ -94,6 +131,9 @@ class WhisperCppSTTProvider(STTProvider):
             cleaned = re.sub(r"\[.*?\]|\(.*?\)", "", raw_output).strip()
             # Remove leading/trailing quotes or punctuation artifacts
             cleaned = re.sub(r"^[\"'\s]+|[\"'\s]+$", "", cleaned).strip()
+
+            if not cleaned or self.is_noise_hallucination(cleaned):
+                return ""
 
             return cleaned
 

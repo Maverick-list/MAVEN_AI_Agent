@@ -426,8 +426,9 @@ class TelemetryHub:
     @staticmethod
     def _read_openclaw_channels() -> Dict[str, Any]:
         cfg_path = os.path.expanduser("~/.openclaw/openclaw.json")
-        result = {
+        result: Dict[str, Any] = {
             "primary_model": "google/gemini-2.5-flash",
+            "fallback_models": [],
             "telegram_enabled": False,
             "discord_enabled": False,
             "whatsapp_disabled": True,
@@ -438,6 +439,15 @@ class TelemetryHub:
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            model_cfg = data.get("agents", {}).get("defaults", {}).get("model", {})
+            if isinstance(model_cfg, str) and model_cfg.strip():
+                result["primary_model"] = model_cfg.strip()
+            elif isinstance(model_cfg, dict):
+                if model_cfg.get("primary"):
+                    result["primary_model"] = str(model_cfg["primary"]).strip()
+                raw_fb = model_cfg.get("fallbacks") or []
+                if isinstance(raw_fb, list):
+                    result["fallback_models"] = [str(m).strip() for m in raw_fb if str(m).strip()]
             channels = data.get("channels", {})
             result["telegram_enabled"] = bool(channels.get("telegram", {}).get("enabled", False))
             result["discord_enabled"] = bool(channels.get("discord", {}).get("enabled", False))
@@ -579,7 +589,8 @@ class TelemetryHub:
             "ai_gateway": {
                 "openclaw_active": gw_ok,
                 "openclaw_detail": gw_msg,
-                "primary_model": self.config.model_id,
+                "primary_model": self._cached_openclaw_channels.get("primary_model") or self.config.model_id,
+                "fallback_models": self._cached_openclaw_channels.get("fallback_models", []),
                 "channels": self._cached_openclaw_channels,
             },
             "security": {

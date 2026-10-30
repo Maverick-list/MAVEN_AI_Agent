@@ -129,6 +129,28 @@ def _default_model_id() -> str:
     return DEFAULT_ELEVENLABS_MODEL_ID
 
 
+def _default_openclaw_model_config() -> Dict[str, Any]:
+    """Read primary and fallback model IDs from ~/.openclaw/openclaw.json without touching secrets."""
+    cfg_path = os.path.expanduser("~/.openclaw/openclaw.json")
+    default_primary = "google/gemini-2.5-flash"
+    if not os.path.isfile(cfg_path):
+        return {"primary": default_primary, "fallbacks": []}
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        model_cfg = data.get("agents", {}).get("defaults", {}).get("model", {})
+        if isinstance(model_cfg, str) and model_cfg.strip():
+            return {"primary": model_cfg.strip(), "fallbacks": []}
+        if isinstance(model_cfg, dict):
+            primary = str(model_cfg.get("primary") or default_primary).strip()
+            raw_fb = model_cfg.get("fallbacks") or []
+            fallbacks = [str(m).strip() for m in raw_fb if str(m).strip()] if isinstance(raw_fb, list) else []
+            return {"primary": primary, "fallbacks": fallbacks}
+    except Exception:
+        pass
+    return {"primary": default_primary, "fallbacks": []}
+
+
 @dataclass
 class VoiceConfig:
     """Configuration settings for the Maverick Voice Interaction System."""
@@ -181,7 +203,8 @@ class VoiceConfig:
     muted: bool = False
     feedback_prevention: bool = True  # Mute capture during TTS playback
     enable_openclaw_fallback: bool = True
-    model_id: str = "google/gemini-2.5-flash"
+    model_id: str = field(default_factory=lambda: _default_openclaw_model_config()["primary"])
+    model_fallbacks: List[str] = field(default_factory=lambda: _default_openclaw_model_config()["fallbacks"])
     max_recording_seconds: float = 15.0  # Guardrail against infinite recording
 
     # Confirmation requirement for consequential actions
