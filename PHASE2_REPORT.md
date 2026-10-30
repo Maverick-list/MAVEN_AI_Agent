@@ -122,7 +122,7 @@ Ran 37 tests in 0.920s — ALL PASSED (OK)
 
 ## 5. Git Commits & Modified Files
 
-- **`~/Maverick-DevOS`** Commit: `7d04a99`
+- **`~/Maverick-DevOS`** Commit: `527335b`
   - `maverick/media/spotify.py`: Bound unconfined execution strictly to `org.mpris.MediaPlayer2.spotify` and rejected all other destinations.
   - `maverick/core/security.py`: Refined argument validation to context-specific rules (allowing multi-param URLs with `&` while blocking null bytes/newlines).
   - `tests/test_spotify.py`: Added regression test proving non-Spotify destinations are rejected by unconfined fallback.
