@@ -225,6 +225,9 @@ class TelemetryHub:
         self._daemon_last_trigger: str = "wake_word"
 
         self._lock = threading.Lock()
+        self._snapshot_lock = threading.RLock()
+        self._cached_snapshot: Optional[Dict[str, Any]] = None
+        self._last_snapshot_ts: float = 0.0
         self._state_cond = threading.Condition()
         self._state_seq = 0
 
@@ -269,6 +272,9 @@ class TelemetryHub:
         self._prime_log_tail()
 
     def notify_change(self) -> None:
+        with self._snapshot_lock:
+            self._cached_snapshot = None
+            self._last_snapshot_ts = 0.0
         with self._state_cond:
             self._state_seq += 1
             self._state_cond.notify_all()
@@ -480,8 +486,12 @@ class TelemetryHub:
 
     def get_snapshot(self) -> Dict[str, Any]:
         """Collect complete real-time operational snapshot with zero simulated status."""
-        now = time.time()
-        self._poll_log_updates()
+        with self._snapshot_lock:
+            now = time.time()
+            if self._cached_snapshot and (now - self._last_snapshot_ts) < 0.25:
+                return dict(self._cached_snapshot)
+
+            self._poll_log_updates()
 
         # 1. Live Voice Daemon Process Inspection
         pid = get_voice_process_pid()
@@ -555,7 +565,7 @@ class TelemetryHub:
             app_id for app_id, spec in AUTHORIZED_APPLICATIONS.items() if spec.requires_confirmation
         ]
 
-        return {
+        snap = {
             "status": "success",
             "timestamp": time.strftime("%H:%M:%S"),
             "timezone": time.strftime("%Z") or "LOCAL",
@@ -638,6 +648,10 @@ class TelemetryHub:
             "computer_use": self.computer_use_agent.get_telemetry(),
             "conversations": self.conversations.list_recent(limit=30),
         }
+        with self._snapshot_lock:
+            self._cached_snapshot = snap
+            self._last_snapshot_ts = now
+        return snap
 
     # --- Interactive Control Actions ---
 
@@ -784,7 +798,57 @@ class TelemetryHub:
 
         preferred = self.tts._preferred_engine()
         fallback_reason: Optional[str] = None
+        requested_voice = (overrides or {}).get("voice") or (overrides or {}).get("voice_id")
 
+        # 1. Primary Default: Local Neural TTS (Pocket-TTS English / Indonesian)
+        if (preferred == "local_neural" or not self.tts.primary.is_configured()) and hasattr(self.tts, "local_neural") and self.tts.local_neural.is_available():
+            if browser_audio:
+                try:
+                    self.set_transient_state("thinking", duration_sec=4.0)
+                    wav_bytes, meta = self.tts.local_neural.synthesize_to_bytes(
+                        phrase,
+                        voice_name=requested_voice,
+                        language=lang,
+                    )
+                    if wav_bytes:
+                        token = self.store_ephemeral_mp3(wav_bytes)
+                        self.tts.last_used_engine = "local_neural"
+                        self.tts.last_fallback_reason = None
+                        est_dur = meta.get("audio_duration_sec") or max(2.0, min(18.0, len(phrase) / 13.0))
+                        self.set_transient_state("speaking", duration_sec=est_dur, rms=0.42)
+                        return {
+                            "status": "success",
+                            "engine": "local_neural",
+                            "playback_mode": "browser_webaudio",
+                            "audio_url": f"/api/voice/stream/{token}",
+                            "text": phrase,
+                            "voice_name": meta.get("voice_name", requested_voice or "george"),
+                            "latency_ms": meta.get("latency_ms", 0.0),
+                            "metrics": meta,
+                        }
+                    fallback_reason = meta.get("error", "local_neural_empty")
+                except Exception as ln_err:
+                    fallback_reason = f"local_neural_exception: {ln_err}"
+                    self.tts.last_fallback_reason = fallback_reason
+                    voice_logger.tts_fallback("local_neural", "elevenlabs" if self.tts.primary.is_configured() else "speech_dispatcher", reason=fallback_reason)
+            else:
+                self.set_transient_state("speaking", duration_sec=6.0, rms=0.40)
+                ok_ln = self.tts.local_neural.speak(phrase, wait=False, language=lang, voice_name=requested_voice)
+                if ok_ln:
+                    self.tts.last_used_engine = "local_neural"
+                    return {
+                        "status": "success",
+                        "engine": "local_neural",
+                        "playback_mode": "host_pipewire",
+                        "text": phrase,
+                        "voice_name": requested_voice or getattr(self.tts.local_neural, "voice_name", "george"),
+                        "metrics": getattr(self.tts.local_neural, "_last_metrics", {}),
+                    }
+                fallback_reason = getattr(self.tts.local_neural, "_last_error", None) or "local_neural_failed"
+                self.tts.last_fallback_reason = fallback_reason
+                voice_logger.tts_fallback("local_neural", "elevenlabs" if self.tts.primary.is_configured() else "speech_dispatcher", reason=fallback_reason)
+
+        # 2. Secondary Optional: ElevenLabs (Only when opted-in and configured)
         if preferred == "elevenlabs" and self.tts.primary.is_configured():
             if browser_audio:
                 try:
@@ -826,25 +890,7 @@ class TelemetryHub:
             fallback_reason = self.tts.primary.get_public_status().get("key_status", "missing_api_key")
             self.tts.last_fallback_reason = fallback_reason
 
-        # Primary Local Neural TTS (Pocket-TTS Indonesian)
-        if hasattr(self.tts, "local_neural") and self.tts.local_neural.is_available():
-            self.set_transient_state("speaking", duration_sec=6.0, rms=0.40)
-            ok_ln = self.tts.local_neural.speak(phrase, wait=False, language=lang)
-            if ok_ln:
-                self.tts.last_used_engine = "local_neural"
-                return {
-                    "status": "success",
-                    "engine": "local_neural",
-                    "playback_mode": "host_pipewire",
-                    "text": phrase,
-                    "voice_name": getattr(self.tts.local_neural, "voice_name", "default"),
-                    "metrics": getattr(self.tts.local_neural, "_last_metrics", {}),
-                }
-            fallback_reason = getattr(self.tts.local_neural, "_last_error", None) or "local_neural_failed"
-            self.tts.last_fallback_reason = fallback_reason
-            voice_logger.tts_fallback("local_neural", "speech_dispatcher", reason=fallback_reason)
-
-        # Automatic Fallback to Speech Dispatcher (spd-say) on host speakers
+        # 3. Automatic Fallback to Speech Dispatcher (spd-say) on host speakers
         est_dur = max(1.8, min(14.0, len(phrase) / 14.0))
         self.set_transient_state("speaking", duration_sec=est_dur, rms=0.35)
 
@@ -1106,6 +1152,156 @@ class TelemetryHub:
         self.notify_change()
         return {"status": "success", "calibration": self.vision_controller.engine.calibrator.to_dict()}
 
+    def cancel_active_task(self) -> Dict[str, Any]:
+        """Cancel the currently active planning or computer-use task."""
+        cancelled_items = []
+        if self.active_plan and self.active_plan.status in (TaskStatus.IN_PROGRESS, TaskStatus.WAITING_APPROVAL):
+            self.active_plan.status = TaskStatus.FAILED
+            for s in self.active_plan.steps:
+                if s.status in ("in_progress", "waiting_approval", "pending"):
+                    s.status = "failed"
+                    s.result = {"status": "cancelled", "message": "Task cancelled by user"}
+            cancelled_items.append(f"plan:{self.active_plan.plan_id}")
+
+        if hasattr(self, "computer_use_agent") and self.computer_use_agent:
+            self.computer_use_agent.pause()
+            cancelled_items.append("computer_use")
+
+        self.set_transient_state(None)
+        self.notify_change()
+        return {"status": "success", "cancelled": cancelled_items}
+
+    def emergency_stop_all(self) -> Dict[str, Any]:
+        """Immediately disengage vision, pause computer-use, stop TTS, and halt active tasks."""
+        v_res = self.vision_emergency_stop()
+        cu_res = self.computer_use_agent.emergency_stop()
+        self.tts.stop()
+        if self.active_plan:
+            self.active_plan.status = TaskStatus.FAILED
+        self.set_transient_state(None)
+        self.notify_change()
+        return {
+            "status": "success",
+            "action": "emergency_stop_all_engaged",
+            "vision": v_res,
+            "computer_use": cu_res,
+        }
+
+    def test_camera(self) -> Dict[str, Any]:
+        """Enumerate camera and capture a single test frame to verify hardware pipeline."""
+        cam = self.vision_controller.camera
+        was_running = cam.is_running
+        if not was_running:
+            ok = cam.start()
+            if not ok:
+                return {"status": "error", "message": "Failed to start camera device"}
+        try:
+            ok, frame = cam.read_frame(timeout_sec=1.5)
+            if not ok or frame is None:
+                return {"status": "error", "message": "Failed to read frame from camera"}
+            h, w = frame.shape[:2]
+            return {
+                "status": "success",
+                "device_index": cam.device_index,
+                "resolution": f"{w}x{h}",
+                "fps": cam.fps,
+                "is_active": cam.is_running,
+            }
+        finally:
+            if not was_running:
+                cam.stop()
+
+    def get_live_camera_frame(self) -> Tuple[Optional[bytes], str]:
+        """Return the latest frame as JPEG bytes, or placeholder image if camera is off."""
+        try:
+            import cv2
+        except ImportError:
+            return None, "OpenCV is not available"
+
+        cam = self.vision_controller.camera
+        if not cam.is_running:
+            return None, "Camera is offline"
+        ok, frame = cam.read_frame(timeout_sec=0.5)
+        if not ok or frame is None:
+            return None, "No frame available"
+        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok:
+            return None, "Encoding failed"
+        return buf.tobytes(), "ok"
+
+    def test_gesture(self) -> Dict[str, Any]:
+        """Run a single-frame gesture inference test on the live camera or provider."""
+        cam = self.vision_controller.camera
+        was_running = cam.is_running
+        if not was_running:
+            ok = cam.start()
+            if not ok:
+                return {"status": "error", "message": "Failed to start camera device"}
+        try:
+            ok, frame = cam.read_frame(timeout_sec=1.5)
+            if not ok or frame is None:
+                return {"status": "error", "message": "Failed to read frame"}
+            tracker = self.vision_controller.hand_tracker
+            hands = tracker.detect_hands(frame)
+            gesture = None
+            if hands:
+                gesture = self.vision_controller.gesture_classifier.classify(hands[0])
+            return {
+                "status": "success",
+                "hands_detected": len(hands),
+                "gesture": gesture.name if gesture else "NO_HANDS",
+                "provider": tracker.provider_name,
+            }
+        finally:
+            if not was_running:
+                cam.stop()
+
+    def execute_toolkit(self, toolkit_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute diagnostic or assistant toolkits (codebase, research, document)."""
+        try:
+            if toolkit_type == "research":
+                from maverick.intelligence.toolkit.research import ResearchAssistant
+                assistant = ResearchAssistant()
+                query = str(payload.get("query", "")).strip()
+                topic = str(payload.get("topic", "general"))
+                res = assistant.research(query=query, topic=topic)
+                return {
+                    "status": "success",
+                    "query": res.query,
+                    "summary": res.summary,
+                    "confidence_score": res.confidence_score,
+                    "sources": [s.to_dict() for s in res.sources],
+                }
+            elif toolkit_type == "document":
+                from maverick.intelligence.toolkit.documents import generate_markdown, generate_docx, generate_pdf
+                doc_type = str(payload.get("type", "markdown")).lower()
+                title = str(payload.get("title", "Document"))
+                target_path = str(payload.get("path") or f"/tmp/{title.lower().replace(' ', '_')}")
+                sections = payload.get("sections")
+                if not isinstance(sections, list) or not sections:
+                    content = str(payload.get("content", ""))
+                    sections = [{"heading": "Overview", "content": content}]
+                if doc_type == "pdf":
+                    res = generate_pdf(path=target_path, title=title, sections=sections)
+                elif doc_type == "docx":
+                    res = generate_docx(path=target_path, title=title, sections=sections)
+                else:
+                    res = generate_markdown(path=target_path, title=title, sections=sections)
+                return res
+            elif toolkit_type in ("code", "codebase"):
+                from maverick.intelligence.toolkit.codebase import codebase_find_symbols, codebase_grep
+                action = str(payload.get("action", "find_symbols"))
+                path = str(payload.get("path") or payload.get("target_path") or ".")
+                if action == "grep":
+                    pattern = str(payload.get("pattern", ""))
+                    return codebase_grep(target_path=path, pattern=pattern)
+                symbol_name = payload.get("symbol_name") or payload.get("symbol")
+                return codebase_find_symbols(target_path=path, symbol_name=symbol_name)
+            else:
+                return {"status": "error", "message": f"Unknown toolkit type: {toolkit_type}"}
+        except Exception as exc:
+            return {"status": "error", "message": f"Toolkit execution failed: {exc}"}
+
 
 class ControlCenterRequestHandler(BaseHTTPRequestHandler):
     """HTTP + SSE request handler bound strictly to 127.0.0.1."""
@@ -1129,14 +1325,17 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         return parsed.hostname in ("127.0.0.1", "localhost")
 
     def _send_json(self, payload: Dict[str, Any], status: int = HTTPStatus.OK) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def _read_json_body(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -1199,6 +1398,27 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "success", "tools": self.hub.planner.tools.list_tools()})
             return
 
+        if route == "/api/system/diagnostics":
+            from maverick.system.monitor import get_system_summary
+            self._send_json({"status": "success", "diagnostics": get_system_summary()})
+            return
+
+        if route == "/api/vision/frame":
+            frame_bytes, err = self.hub.get_live_camera_frame()
+            if not frame_bytes:
+                self._send_json({"status": "offline", "message": err}, status=HTTPStatus.NOT_FOUND)
+                return
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(frame_bytes)))
+                self.send_header("Cache-Control", "no-store, no-cache")
+                self.end_headers()
+                self.wfile.write(frame_bytes)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
+
         if route == "/api/voice/voices":
             el_voices = self.hub.tts.primary.list_available_voices()
             ln_avail = getattr(self.hub.tts.local_neural, "is_available", lambda: False)() if hasattr(self.hub.tts, "local_neural") else False
@@ -1208,12 +1428,18 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
                 "preferred_engine": self.hub.tts._preferred_engine(),
                 "local_neural": {
                     "available": ln_avail,
-                    "model": "pocket-tts-indonesian-6l",
+                    "model": "pocket-tts-english-6l",
                     "voices": [
-                        {"id": "common_voice_id_19961910", "name": "Indonesian Male (Balanced, JARVIS)", "gender": "male", "lang": "id"},
-                        {"id": "common_voice_id_20954552", "name": "Indonesian Female (Warm)", "gender": "female", "lang": "id"},
-                        {"id": "common_voice_id_20954811", "name": "Indonesian Male (Clear)", "gender": "male", "lang": "id"},
-                        {"id": "common_voice_id_22918082", "name": "Indonesian Female (Expressive)", "gender": "female", "lang": "id"},
+                        {"id": "george", "name": "George (Natural Male, Default JARVIS)", "gender": "male", "lang": "en"},
+                        {"id": "jean", "name": "Jean (Warm Male)", "gender": "male", "lang": "en"},
+                        {"id": "charles", "name": "Charles (Refined Male)", "gender": "male", "lang": "en"},
+                        {"id": "stuart_bell", "name": "Stuart Bell (Clear Male)", "gender": "male", "lang": "en"},
+                        {"id": "marius", "name": "Marius (Articulate Male)", "gender": "male", "lang": "en"},
+                        {"id": "javert", "name": "Javert (Authoritative Male)", "gender": "male", "lang": "en"},
+                        {"id": "michael", "name": "Michael (Direct Male)", "gender": "male", "lang": "en"},
+                        {"id": "paul", "name": "Paul (Casual Male)", "gender": "male", "lang": "en"},
+                        {"id": "alba", "name": "Alba (Expressive Female)", "gender": "female", "lang": "en"},
+                        {"id": "common_voice_id_19961910", "name": "Indonesian Male (Balanced)", "gender": "male", "lang": "id"},
                     ],
                 },
                 "elevenlabs": el_voices,
@@ -1225,16 +1451,20 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
 
         if route.startswith("/api/voice/stream/"):
             token = route.split("/api/voice/stream/", 1)[1].strip("/")
-            mp3_bytes = self.hub.pop_ephemeral_mp3(token)
-            if not mp3_bytes:
+            audio_bytes = self.hub.pop_ephemeral_mp3(token)
+            if not audio_bytes:
                 self._send_json({"status": "error", "message": "Audio stream expired or not found"}, status=404)
                 return
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "audio/mpeg")
-            self.send_header("Content-Length", str(len(mp3_bytes)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(mp3_bytes)
+            ctype = "audio/wav" if audio_bytes[:4] == b"RIFF" else "audio/mpeg"
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(audio_bytes)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(audio_bytes)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
             return
 
         if route == "/api/computer-use/status":
@@ -1421,6 +1651,41 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/computer-use/emergency-stop":
             self.hub.computer_use_agent.emergency_stop()
             self._send_json({"status": "success", "action": "emergency_stop_engaged"})
+            return
+
+        if route == "/api/emergency-stop":
+            res = self.hub.emergency_stop_all()
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/cancel":
+            res = self.hub.cancel_active_task()
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/test-camera":
+            res = self.hub.test_camera()
+            self._send_json(res)
+            return
+
+        if route == "/api/vision/test-gesture":
+            res = self.hub.test_gesture()
+            self._send_json(res)
+            return
+
+        if route == "/api/toolkit/code":
+            res = self.hub.execute_toolkit("code", body)
+            self._send_json(res)
+            return
+
+        if route == "/api/toolkit/research":
+            res = self.hub.execute_toolkit("research", body)
+            self._send_json(res)
+            return
+
+        if route == "/api/toolkit/document":
+            res = self.hub.execute_toolkit("document", body)
+            self._send_json(res)
             return
 
         self._send_json({"status": "error", "message": f"Unknown endpoint: {route}"}, status=HTTPStatus.NOT_FOUND)

@@ -227,12 +227,14 @@ def generate_docx(
         zf.writestr("_rels/.rels", docx_rels)
         zf.writestr("word/document.xml", doc_xml)
 
+    verification = verify_generated_document(target_path)
     return {
         "status": "success",
         "format": "docx",
         "path": target_path,
         "bytes_written": os.path.getsize(target_path),
         "sections_count": len(sections),
+        "verified": verification.get("ok", False),
     }
 
 
@@ -403,6 +405,7 @@ def generate_pdf(
     with open(target_path, "wb") as f:
         f.write(output)
 
+    verification = verify_generated_document(target_path)
     return {
         "status": "success",
         "format": "pdf",
@@ -410,4 +413,42 @@ def generate_pdf(
         "bytes_written": len(output),
         "pages_count": num_pages,
         "elements_count": len(elements),
+        "verified": verification.get("ok", False),
     }
+
+
+def verify_generated_document(target_path: str) -> Dict[str, Any]:
+    """Verify generated PDF/DOCX/MD file on disk without corruption or silent truncation."""
+    if not os.path.isfile(target_path):
+        return {"ok": False, "error": f"File does not exist: {target_path}"}
+    size = os.path.getsize(target_path)
+    if size == 0:
+        return {"ok": False, "error": "File is 0 bytes"}
+    ext = os.path.splitext(target_path)[1].lower()
+    if ext == ".pdf":
+        with open(target_path, "rb") as f:
+            head = f.read(10)
+            f.seek(max(0, size - 48))
+            tail = f.read(48)
+        if not head.startswith(b"%PDF-"):
+            return {"ok": False, "error": "Invalid PDF magic header"}
+        if b"%%EOF" not in tail:
+            return {"ok": False, "error": "Missing PDF %%EOF marker"}
+        return {"ok": True, "format": "pdf", "size_bytes": size}
+    elif ext == ".docx":
+        import xml.etree.ElementTree as ET
+        try:
+            with zipfile.ZipFile(target_path, "r") as zf:
+                if "word/document.xml" not in zf.namelist():
+                    return {"ok": False, "error": "Missing word/document.xml in docx package"}
+                doc_xml = zf.read("word/document.xml")
+                root = ET.fromstring(doc_xml)
+                text_nodes = root.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+                return {"ok": True, "format": "docx", "size_bytes": size, "text_elements": len(text_nodes)}
+        except Exception as exc:
+            return {"ok": False, "error": f"Corrupt DOCX zip: {exc}"}
+    elif ext in (".md", ".txt"):
+        with open(target_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"ok": True, "format": "markdown", "size_bytes": size, "char_count": len(content)}
+    return {"ok": True, "size_bytes": size}

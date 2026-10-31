@@ -310,5 +310,78 @@ def get_system_summary() -> Dict[str, Any]:
         "resources": get_system_resources(),
         "battery": get_battery_status(),
         "network": get_network_status(),
+        "services": get_maven_services_health(),
+        "top_processes": get_sanitized_processes(limit=8),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def get_sanitized_processes(limit: int = 15) -> List[Dict[str, Any]]:
+    """
+    List top active processes by CPU/memory with strict secret scrubbing.
+    Redacts command-line tokens, passwords, keys, and authorization flags.
+    """
+    results: List[Dict[str, Any]] = []
+    try:
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "username", "cpu_percent", "memory_percent", "cmdline"]):
+            try:
+                info = p.info
+                if info and info.get("name"):
+                    procs.append(info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        procs.sort(key=lambda x: (x.get("cpu_percent") or 0.0) + (x.get("memory_percent") or 0.0), reverse=True)
+
+        for p in procs[:limit]:
+            cmdline = p.get("cmdline") or []
+            sanitized_cmd = []
+            for arg in cmdline:
+                lower = arg.lower()
+                if any(k in lower for k in ("token", "key", "secret", "password", "auth", "bearer")):
+                    sanitized_cmd.append("[REDACTED]")
+                elif len(arg) > 80:
+                    sanitized_cmd.append(arg[:40] + "...")
+                else:
+                    sanitized_cmd.append(arg)
+
+            results.append(
+                {
+                    "pid": p.get("pid"),
+                    "name": p.get("name"),
+                    "user": p.get("username"),
+                    "cpu_percent": round(p.get("cpu_percent") or 0.0, 1),
+                    "memory_percent": round(p.get("memory_percent") or 0.0, 1),
+                    "cmd": " ".join(sanitized_cmd) if sanitized_cmd else p.get("name", ""),
+                }
+            )
+    except Exception as exc:
+        results.append({"error": f"Failed to inspect processes: {exc}"})
+
+    return results
+
+
+def get_maven_services_health() -> Dict[str, Any]:
+    """Inspect availability of core Maven AI & desktop services."""
+    import socket
+
+    def _is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except (OSError, ConnectionRefusedError):
+            return False
+
+    openclaw_ok = _is_port_open("127.0.0.1", 18789)
+    whisper_ok = _is_port_open("127.0.0.1", 18791)
+
+    camera_avail = os.path.exists("/dev/video0") and os.access("/dev/video0", os.R_OK)
+    pw_ok = shutil.which("pw-play") is not None or shutil.which("aplay") is not None
+
+    return {
+        "openclaw_gateway": {"host": "127.0.0.1:18789", "status": "online" if openclaw_ok else "offline"},
+        "whisper_stt": {"host": "127.0.0.1:18791", "status": "online" if whisper_ok else "offline"},
+        "camera_device": {"node": "/dev/video0", "status": "accessible" if camera_avail else "missing"},
+        "audio_sink": {"status": "ready" if pw_ok else "missing_player"},
     }

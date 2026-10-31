@@ -1042,12 +1042,26 @@
 
   async function triggerEmergencyStop() {
     try {
-      await apiPost("/api/vision/emergency-stop");
-      showToast("🛑 EMERGENCY STOP: Virtual mouse & gestures halted");
+      await apiPost("/api/emergency-stop");
+      showToast("🛑 MASTER EMERGENCY STOP: Virtual mouse, computer use, and TTS halted");
     } catch (err) {
       showToast(`Emergency stop failed: ${err.message}`);
     }
   }
+
+  document.getElementById("btn-test-camera")?.addEventListener("click", async () => {
+    try {
+      showToast("Probing hardware camera...");
+      const res = await apiPost("/api/vision/test-camera");
+      if (res.status === "success") {
+        showToast(`Camera ready: ${res.resolution} @ ${res.fps} FPS`);
+      } else {
+        showToast(`Camera test: ${res.message || "Failed"}`);
+      }
+    } catch (err) {
+      showToast(`Camera test error: ${err.message}`);
+    }
+  });
 
   async function triggerToggleVisionMode() {
     try {

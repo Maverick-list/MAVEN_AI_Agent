@@ -177,7 +177,7 @@ class AuthorizedHttpSearchProvider(BaseRetrievalProvider):
         return "authorized_http_search"
 
     def is_available(self) -> bool:
-        return bool(self.api_endpoint)
+        return True
 
     def is_safe_url(self, url: str) -> Tuple[bool, str]:
         """Validate URL to protect against SSRF, internal network scans, and invalid schemes."""
@@ -227,7 +227,7 @@ class AuthorizedHttpSearchProvider(BaseRetrievalProvider):
             return False, f"URL safety check failed: {e}"
 
     def search(self, query: str, max_results: int = 4) -> List[SourceDocument]:
-        if not self.is_available() or not self.api_endpoint:
+        if not query or not query.strip():
             return []
 
         # Enforce rate limit
@@ -237,36 +237,111 @@ class AuthorizedHttpSearchProvider(BaseRetrievalProvider):
             time.sleep(self.MIN_REQUEST_INTERVAL_SECONDS - elapsed)
         self._last_request_time = time.time()
 
-        safe, reason = self.is_safe_url(self.api_endpoint)
-        if not safe:
-            logger.error("Authorized search endpoint rejected by SSRF guard: %s", reason)
-            return []
+        clean_query = query.strip()
+        results: List[SourceDocument] = []
 
-        # Perform request with strict timeout and size limit
+        # 1. Custom endpoint if configured
+        if self.api_endpoint:
+            safe, reason = self.is_safe_url(self.api_endpoint)
+            if not safe:
+                logger.error("Authorized search endpoint rejected by SSRF guard: %s", reason)
+                return []
+            try:
+                req_data = urllib.parse.urlencode({"q": clean_query, "limit": max_results}).encode("utf-8")
+                req = urllib.request.Request(
+                    self.api_endpoint,
+                    data=req_data,
+                    headers={
+                        "User-Agent": "Maverick-DevOS-Research/1.0",
+                        "Accept": "application/json",
+                    },
+                )
+                if self.api_key:
+                    req.add_header("Authorization", f"Bearer {self.api_key}")
+                with urllib.request.urlopen(req, timeout=self.REQUEST_TIMEOUT_SECONDS) as resp:
+                    raw = resp.read(self.MAX_RESPONSE_BYTES)
+                    obj = json.loads(raw.decode("utf-8", errors="replace"))
+                    if isinstance(obj, list):
+                        for item in obj[:max_results]:
+                            if isinstance(item, dict) and "url" in item:
+                                is_s, _ = self.is_safe_url(item["url"])
+                                if is_s:
+                                    results.append(
+                                        SourceDocument(
+                                            source_id=f"src_{len(results)+1}",
+                                            url=item["url"],
+                                            title=item.get("title", "Untitled"),
+                                            content_text=item.get("snippet", ""),
+                                            domain=urllib.parse.urlparse(item["url"]).netloc,
+                                            credibility_score=float(item.get("credibility", 0.85)),
+                                        )
+                                    )
+                if results:
+                    return results
+            except Exception as e:
+                logger.debug("Custom search endpoint query failed: %s", e)
+
+        # 2. Public Live Multi-Source Retrieval: Wikipedia OpenSearch + REST Summaries
         try:
-            req_data = urllib.parse.urlencode({"q": query, "limit": max_results}).encode("utf-8")
-            req = urllib.request.Request(
-                self.api_endpoint,
-                data=req_data,
-                headers={
-                    "User-Agent": "Maverick-DevOS-Research/1.0",
-                    "Accept": "application/json",
-                },
+            opensearch_url = (
+                f"https://en.wikipedia.org/w/api.php?action=opensearch&search="
+                f"{urllib.parse.quote(clean_query)}&limit={max_results}&format=json"
             )
-            if self.api_key:
-                req.add_header("Authorization", f"Bearer {self.api_key}")
+            safe, _ = self.is_safe_url(opensearch_url)
+            if not safe:
+                return []
 
+            req = urllib.request.Request(
+                opensearch_url,
+                headers={"User-Agent": "Maverick-DevOS-Research/1.0 (Linux; x86_64)"},
+            )
             with urllib.request.urlopen(req, timeout=self.REQUEST_TIMEOUT_SECONDS) as resp:
-                content = resp.read(self.MAX_RESPONSE_BYTES + 1)
-                if len(content) > self.MAX_RESPONSE_BYTES:
-                    logger.warning("Response exceeded 2MB size limit; truncated")
-                    content = content[:self.MAX_RESPONSE_BYTES]
+                data = json.loads(resp.read(262144).decode("utf-8", errors="replace"))
+                titles = data[1] if len(data) > 1 and isinstance(data[1], list) else []
+                snippets = data[2] if len(data) > 2 and isinstance(data[2], list) else []
+                links = data[3] if len(data) > 3 and isinstance(data[3], list) else []
 
-            # In a live setup, response JSON is parsed into SourceDocument entries
-            return []
-        except Exception as e:
-            logger.error("HTTP search request failed: %s", e)
-            return []
+                for idx, (t, s, u) in enumerate(zip(titles, snippets, links)):
+                    safe_url, _ = self.is_safe_url(u)
+                    if not safe_url:
+                        continue
+
+                    # Fetch rich extract via REST summary API if snippet is short
+                    rich_extract = s
+                    if len(rich_extract) < 120 and t:
+                        try:
+                            sum_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(t.replace(' ', '_'))}"
+                            s_safe, _ = self.is_safe_url(sum_url)
+                            if s_safe:
+                                sum_req = urllib.request.Request(
+                                    sum_url,
+                                    headers={"User-Agent": "Maverick-DevOS-Research/1.0"},
+                                )
+                                with urllib.request.urlopen(sum_req, timeout=3.5) as sum_resp:
+                                    sum_data = json.loads(sum_resp.read(65536).decode("utf-8", errors="replace"))
+                                    ext = sum_data.get("extract", "")
+                                    if ext:
+                                        rich_extract = ext
+                        except Exception:
+                            pass
+
+                    domain = urllib.parse.urlparse(u).netloc
+                    doc = SourceDocument(
+                        source_id=f"src_{len(results)+1}",
+                        url=u,
+                        title=t or "Wikipedia Entry",
+                        content_text=rich_extract,
+                        domain=domain,
+                        credibility_score=0.92,
+                        metadata={"search_rank": idx + 1, "provider": "wikipedia_verified"},
+                    )
+                    results.append(doc)
+                    if len(results) >= max_results:
+                        break
+        except Exception as exc:
+            logger.debug("Wikipedia public search failed: %s", exc)
+
+        return results
 
 
 class ResearchAssistant:
@@ -287,7 +362,10 @@ class ResearchAssistant:
         providers: Optional[List[BaseRetrievalProvider]] = None,
         browser_client: Optional[Any] = None,
     ):
-        self.providers: List[BaseRetrievalProvider] = providers or []
+        if providers is not None:
+            self.providers = list(providers)
+        else:
+            self.providers = [AuthorizedHttpSearchProvider()]
         if browser_client is not None:
             self.providers.append(BrowserTabRetrievalProvider(browser_client))
 
