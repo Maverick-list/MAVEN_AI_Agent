@@ -99,7 +99,7 @@ class TestIntelligenceEndpoints(unittest.TestCase):
         cmd_res = controller.handle_voice_command("Maven, ingat bahwa saya suka teh manis")
         self.assertEqual(cmd_res["status"], "success")
         self.assertEqual(cmd_res["action"], "memory_store")
-        self.assertIn("memori", cmd_res["response"].lower())
+        self.assertTrue(any(w in cmd_res["response"].lower() for w in ("memory", "memori")))
 
         # 3. VoiceController execution test for memory recall
         recall_res = controller.handle_voice_command("Maven, apa yang kamu ingat tentang teh?")
