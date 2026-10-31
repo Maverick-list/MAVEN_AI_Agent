@@ -136,6 +136,9 @@ class ElevenLabsTTSProvider:
         self._conn_lock = threading.Lock()
         self._https_conn: Optional[http.client.HTTPSConnection] = None
         self._ssl_ctx = ssl.create_default_context()
+        self._cached_voices: Optional[Dict[str, Any]] = None
+        self._cached_voices_ts: float = 0.0
+        self._voices_lock = threading.Lock()
 
     def _effective_params(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Merge config defaults, live saved voice_settings.json, and optional per-call overrides."""
@@ -823,16 +826,28 @@ class ElevenLabsTTSProvider:
         except Exception:
             pass
 
-    def list_available_voices(self) -> Dict[str, Any]:
-        """Query ElevenLabs /v1/voices if configured; always include curated JARVIS presets."""
+    def list_available_voices(self, max_age: float = 300.0) -> Dict[str, Any]:
+        """Query ElevenLabs /v1/voices if configured; always include curated JARVIS presets.
+        
+        Cached for max_age seconds (default 300s) to eliminate remote WAN network latency on high-frequency polling.
+        """
+        with getattr(self, "_voices_lock", threading.Lock()):
+            now = time.time()
+            if self._cached_voices is not None and (now - getattr(self, "_cached_voices_ts", 0.0)) < max_age:
+                return dict(self._cached_voices)
+
         key_ok, key_code, key_hint = inspect_elevenlabs_key_state()
         if not key_ok:
-            return {
+            res = {
                 "status": "unconfigured",
                 "key_status": key_code,
                 "hint": key_hint,
                 "voices": JARVIS_VOICE_PRESETS,
             }
+            with getattr(self, "_voices_lock", threading.Lock()):
+                self._cached_voices = res
+                self._cached_voices_ts = time.time()
+            return res
 
         req = urllib.request.Request(
             f"{ELEVENLABS_API_BASE}/voices",
@@ -863,7 +878,7 @@ class ElevenLabsTTSProvider:
                         }
                     )
                     seen_ids.add(vid)
-                return {
+                res = {
                     "status": "success",
                     "key_status": "valid",
                     "voices": remote_voices,
@@ -872,7 +887,7 @@ class ElevenLabsTTSProvider:
             # Scoped TTS-only keys often omit 'voices_read' permission; keep curated JARVIS presets
             # without polluting TTS synthesis health state.
             code, msg = self._classify_http_error(http_err)
-            return {
+            res = {
                 "status": "presets_only",
                 "key_status": "tts_scoped" if http_err.code in (401, 403) else code,
                 "hint": "Using built-in JARVIS voice presets (API key is scoped to Text-to-Speech)",
@@ -880,12 +895,17 @@ class ElevenLabsTTSProvider:
             }
         except Exception as exc:
             msg = f"Could not fetch voices: {type(exc).__name__}"
-            return {
+            res = {
                 "status": "error",
                 "key_status": "network_error",
                 "hint": msg,
                 "voices": JARVIS_VOICE_PRESETS,
             }
+
+        with getattr(self, "_voices_lock", threading.Lock()):
+            self._cached_voices = res
+            self._cached_voices_ts = time.time()
+        return res
 
     def _record_error(self, code: str, message: str) -> None:
         self._last_error_code = code

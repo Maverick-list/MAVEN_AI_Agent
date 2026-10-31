@@ -261,6 +261,7 @@ class TelemetryHub:
         self._snapshot_lock = threading.RLock()
         self._cached_snapshot: Optional[Dict[str, Any]] = None
         self._last_snapshot_ts: float = 0.0
+        self._refreshing_snapshot: bool = False
         self._state_cond = threading.Condition()
         self._state_seq = 0
 
@@ -521,11 +522,24 @@ class TelemetryHub:
         """Collect complete real-time operational snapshot with zero simulated status."""
         with self._snapshot_lock:
             now = time.time()
-            if self._cached_snapshot and (now - self._last_snapshot_ts) < 0.25:
+            if self._cached_snapshot and (now - self._last_snapshot_ts) < 0.35:
                 return dict(self._cached_snapshot)
-
+            if self._refreshing_snapshot and self._cached_snapshot:
+                return dict(self._cached_snapshot)
+            self._refreshing_snapshot = True
             self._poll_log_updates()
 
+        try:
+            snap = self._build_snapshot(now)
+            with self._snapshot_lock:
+                self._cached_snapshot = snap
+                self._last_snapshot_ts = time.time()
+            return snap
+        finally:
+            with self._snapshot_lock:
+                self._refreshing_snapshot = False
+
+    def _build_snapshot(self, now: float) -> Dict[str, Any]:
         # 1. Live Voice Daemon Process Inspection
         pid = get_voice_process_pid()
         daemon_running = pid is not None
@@ -683,9 +697,6 @@ class TelemetryHub:
             "computer_use": self.computer_use_agent.get_telemetry(),
             "conversations": self.conversations.list_recent(limit=30),
         }
-        with self._snapshot_lock:
-            self._cached_snapshot = snap
-            self._last_snapshot_ts = now
         return snap
 
     # --- Interactive Control Actions ---
@@ -1871,7 +1882,7 @@ class ControlCenterServer(ThreadingHTTPServer):
             )
         self.hub = hub or TelemetryHub()
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=8,
+            max_workers=16,
             thread_name_prefix="DashboardWorker",
         )
         super().__init__((host, port), ControlCenterRequestHandler)

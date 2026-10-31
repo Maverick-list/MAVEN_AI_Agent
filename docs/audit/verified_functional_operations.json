@@ -1,0 +1,247 @@
+{
+  "timestamp": "2026-10-31 23:41:44 +0700",
+  "suites": {
+    "voice": {
+      "audio_hardware": {
+        "has_microphone": true,
+        "has_speaker": true,
+        "default_input": "Ryzen HD Audio Controller Analog Stereo",
+        "default_output": "Ryzen HD Audio Controller Analog Stereo",
+        "inputs_count": 1,
+        "outputs_count": 1
+      },
+      "voice_catalog": {
+        "active_engine": "local_neural",
+        "local_neural_available": true,
+        "curated_voices_count": 10
+      },
+      "synthesis_test": {
+        "status": "success",
+        "engine": "local_neural",
+        "voice": "george",
+        "ttfb_ms": 112.7,
+        "audio_duration_s": 3.12,
+        "rtf": 0.34,
+        "request_latency_ms": 3022.0
+      },
+      "audio_stream": {
+        "status": 200,
+        "header_magic": "RIFF",
+        "is_valid_wav": true
+      },
+      "barge_in_stop": {
+        "status": "success",
+        "action": "tts_stopped"
+      },
+      "mute_unmute": {
+        "mute": "success",
+        "unmute": "success"
+      },
+      "worker_cleanup": {
+        "workers_before": 0,
+        "workers_after": 0,
+        "actions_executed": [
+          "unloaded_vision_models",
+          "closed_idle_tts_worker",
+          "gc_freed_0_objects_and_heap_trimmed"
+        ],
+        "clean_reclaim": true
+      },
+      "verdict": "PASS"
+    },
+    "vision": {
+      "camera_hardware": {
+        "status": "success",
+        "device_index": 0,
+        "resolution": "640x480",
+        "fps": 30.0,
+        "is_active": true
+      },
+      "gesture_recognition": {
+        "status": "success",
+        "hands_detected": 0,
+        "gesture": "NO_HANDS",
+        "provider": "mediapipe_onnx"
+      },
+      "mode_activation": {
+        "status": "success",
+        "mode": "vision",
+        "current_mode": "vision",
+        "previous_mode": "normal",
+        "changed": true,
+        "actions": [
+          "vision_activated: success"
+        ],
+        "memory_profile": {
+          "pid": 99385,
+          "name": "python3",
+          "rss_mb": 582.89,
+          "pss_mb": 564.21,
+          "vms_mb": 1941.02,
+          "threads": 22,
+          "open_fds": 94
+        }
+      },
+      "live_frame": {
+        "status": 200,
+        "content_type": "image/jpeg",
+        "size_bytes": 15971,
+        "is_valid_jpeg": true
+      },
+      "mode_deactivation": {
+        "mode": "normal",
+        "camera_offline": true
+      },
+      "verdict": "PASS"
+    },
+    "computer_use": {
+      "observation": {
+        "screen_resolution": [
+          1920,
+          1200
+        ],
+        "active_window_app": "antigravity",
+        "active_window_title": "Hermes And OpenClaw Messa...",
+        "total_windows_detected": 5,
+        "interactive_elements_count": 9
+      },
+      "profiles": {
+        "count": 9,
+        "sample_profiles": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "pause_resume": {
+        "pause": "success",
+        "resume": "success"
+      },
+      "failure_recovery": {
+        "rejected_empty_goal": true,
+        "response": {
+          "status": "error",
+          "error": "Execution blocked: Emergency Stop is currently engaged.",
+          "task": {
+            "task_id": "cu_918443",
+            "goal": "",
+            "stage": "failed",
+            "current_step_index": 0,
+            "active_app": "antigravity",
+            "active_window": "Hermes And OpenClaw Messa...",
+            "last_action": "",
+            "last_verification": "",
+            "timeline": [
+              {
+                "timestamp": 1793464918.6337628,
+                "stage": "plan",
+                "event": "Task created and plan formulated",
+                "metadata": {
+                  "steps_count": 1
+                },
+                "urgency": "normal"
+              },
+              {
+                "timestamp": 1793464918.6337812,
+                "stage": "failed",
+                "event": "Action blocked by security: Execution blocked: Emergency Stop is currently engaged.",
+                "metadata": {},
+                "urgency": "normal"
+              }
+            ],
+            "steps": [
+              {
+                "step_id": 1,
+                "action_type": "observe",
+                "target": "desktop",
+                "parameters": {},
+                "tier": "normal",
+                "status": "failed",
+                "verification_passed": false,
+                "verification_detail": "",
+                "error": "Execution blocked: Emergency Stop is currently engaged.",
+                "elapsed_ms": 0.0
+              }
+            ],
+            "created_at": 1793464918.633759,
+            "completed_at": null,
+            "error": "Execution blocked: Emergency Stop is currently engaged."
+          }
+        }
+      },
+      "verdict": "PASS"
+    },
+    "dashboard": {
+      "status_integrity": {
+        "has_assistant": true,
+        "has_system": true,
+        "has_audio": true,
+        "has_security": true,
+        "has_vision": true,
+        "has_computer_use": true
+      },
+      "mode_transitions": {
+        "normal": {
+          "requested": "normal",
+          "active": "normal",
+          "ok": true
+        },
+        "voice": {
+          "requested": "voice",
+          "active": "voice",
+          "ok": true
+        },
+        "vision": {
+          "requested": "vision",
+          "active": "vision",
+          "ok": true
+        },
+        "full_assistant": {
+          "requested": "full_assistant",
+          "active": "full_assistant",
+          "ok": true
+        },
+        "low_memory": {
+          "requested": "low_memory",
+          "active": "low_memory",
+          "ok": true
+        },
+        "safe_idle": {
+          "requested": "safe_idle",
+          "active": "safe_idle",
+          "ok": true
+        }
+      },
+      "memory_profile": {
+        "subsystems_count": 2,
+        "components": [
+          "maven_runtime",
+          "openclaw_gateway"
+        ]
+      },
+      "emergency_stop": {
+        "status": "success",
+        "action": "emergency_stop_all_engaged",
+        "vision": {
+          "ok": true,
+          "status": "success",
+          "action": "emergency_stop",
+          "previous_mode": "normal",
+          "current_mode": "emergency_stopped",
+          "message": "Emergency Stop engaged. Automation halted.",
+          "response": "Emergency stop activated. All automated inputs and gestures halted."
+        },
+        "computer_use": null
+      },
+      "sse_stream": {
+        "status": 200,
+        "first_line": "event: telemetry",
+        "has_telemetry_event": true
+      },
+      "verdict": "PASS"
+    }
+  },
+  "overall_verdict": "PASS"
+}
