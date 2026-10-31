@@ -4,17 +4,52 @@ __pycache__/
 .venv/
 venv/
 env/
+tts-env/
 .env
 *.env
+.env.*
 *.pem
 *.key
 *.token
 *.secret
+*credentials*.json
+secrets.json
+secrets.yaml
+*.secrets
 .pytest_cache/
 .coverage
 *.log
 *.pid
 
+# Runtime databases, trial telemetry & temporary caches
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+trial_logs/
+*day*_activity.jsonl
+.cache/
+tmp/
+
+# Large model weights, audio recordings & raw camera frames
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.bin
+*.gguf
+*.wav
+*.mp3
+*.flac
+*.ogg
+raw_frame_*.jpg
+raw_frame_*.png
+camera_capture_*.jpg
+camera_capture_*.png
 
 # Debian packaging build scratch
 dist/deb/package_root/
+
