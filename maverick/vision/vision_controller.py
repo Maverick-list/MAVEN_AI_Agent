@@ -278,6 +278,7 @@ class VisionController:
     def get_status(self) -> Dict[str, Any]:
         """Multimodal status snapshot for Control Center."""
         mgr_status = self.mode_manager.get_status()
+        eng = mgr_status.get("engine", {})
         return {
             "mode": mgr_status["mode"],
             "interaction_mode": mgr_status["mode"],
@@ -285,6 +286,8 @@ class VisionController:
             "is_vision_paused": mgr_status["is_vision_paused"],
             "is_normal_mode": mgr_status["is_normal_mode"],
             "physical_input_status": mgr_status["physical_input_status"],
-            "engine": mgr_status["engine"],
+            "camera": eng.get("camera", {}),
+            "mouse": eng.get("mouse", {}),
+            "engine": eng,
             "screen": self.screen.get_summary(),
         }

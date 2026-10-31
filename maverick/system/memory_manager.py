@@ -364,13 +364,24 @@ class MemoryManager:
         main_prof["component"] = "maven_runtime"
         subsystems.append(main_prof)
 
-        # 2. OpenClaw Gateway
+        # 2. OpenClaw Gateway and other Maven subsystems
+        current_pid = os.getpid()
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
+                if proc.info["pid"] == current_pid:
+                    continue
                 cmd = " ".join(proc.info.get("cmdline") or [])
                 if "openclaw" in cmd and "gateway" in cmd:
                     p_info = self.get_process_memory_info(proc.info["pid"])
                     p_info["component"] = "openclaw_gateway"
+                    subsystems.append(p_info)
+                elif "maverick.dashboard" in cmd:
+                    p_info = self.get_process_memory_info(proc.info["pid"])
+                    p_info["component"] = "maven_dashboard_server"
+                    subsystems.append(p_info)
+                elif "maverick.voice" in cmd:
+                    p_info = self.get_process_memory_info(proc.info["pid"])
+                    p_info["component"] = "maven_voice_daemon"
                     subsystems.append(p_info)
                 elif "whisper-server" in cmd:
                     p_info = self.get_process_memory_info(proc.info["pid"])
