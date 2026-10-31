@@ -572,23 +572,22 @@ class TaskPlanner:
             step = ready_steps[0]
 
             # Human approval check
-            if step.requires_approval:
-                if approved_step_id == step.step_id:
-                    is_confirmed = True
-                else:
-                    step.status = "awaiting_approval"
-                    plan.status = TaskStatus.AWAITING_APPROVAL
-                    plan.awaiting_step_id = step.step_id
-                    self.store.save_plan_data(plan.to_dict())
-                    return {
-                        "status": "awaiting_approval",
-                        "plan_id": plan.plan_id,
-                        "awaiting_step_id": step.step_id,
-                        "description": step.description,
-                        "tool_name": step.tool_name,
-                        "parameters": step.parameters,
-                        "plan": plan.to_dict(),
-                    }
+            if approved_step_id == step.step_id:
+                is_confirmed = True
+            elif step.requires_approval:
+                step.status = "awaiting_approval"
+                plan.status = TaskStatus.AWAITING_APPROVAL
+                plan.awaiting_step_id = step.step_id
+                self.store.save_plan_data(plan.to_dict())
+                return {
+                    "status": "awaiting_approval",
+                    "plan_id": plan.plan_id,
+                    "awaiting_step_id": step.step_id,
+                    "description": step.description,
+                    "tool_name": step.tool_name,
+                    "parameters": step.parameters,
+                    "plan": plan.to_dict(),
+                }
             else:
                 is_confirmed = False
 
