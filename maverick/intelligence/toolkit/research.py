@@ -177,7 +177,7 @@ class AuthorizedHttpSearchProvider(BaseRetrievalProvider):
         return "authorized_http_search"
 
     def is_available(self) -> bool:
-        return True
+        return bool(self.api_endpoint)
 
     def is_safe_url(self, url: str) -> Tuple[bool, str]:
         """Validate URL to protect against SSRF, internal network scans, and invalid schemes."""
@@ -362,10 +362,7 @@ class ResearchAssistant:
         providers: Optional[List[BaseRetrievalProvider]] = None,
         browser_client: Optional[Any] = None,
     ):
-        if providers is not None:
-            self.providers = list(providers)
-        else:
-            self.providers = [AuthorizedHttpSearchProvider()]
+        self.providers: List[BaseRetrievalProvider] = providers or []
         if browser_client is not None:
             self.providers.append(BrowserTabRetrievalProvider(browser_client))
 

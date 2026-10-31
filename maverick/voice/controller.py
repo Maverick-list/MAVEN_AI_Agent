@@ -200,24 +200,25 @@ class VoiceController:
 
     def _resolve_response_language(self, user_prompt: str) -> str:
         """
-        Spoken responses default strictly to clear, natural English ('en'), even when
-        input is spoken/typed in Indonesian, unless the user explicitly asks for Indonesian
-        or configures `tts_default_language` to 'id' / 'auto'.
+        Spoken responses default strictly to clear, natural English ('en').
+        Answering in Indonesian only when the user explicitly addresses Maven
+        in Indonesian or requests Indonesian.
         """
         if self._explicitly_requests_indonesian(user_prompt):
             return "id"
         cfg_lang = str(getattr(self.config, "tts_default_language", "en") or "en").lower()
         if cfg_lang == "id":
             return "id"
-        if cfg_lang == "auto":
-            lower = (user_prompt or "").lower()
-            lang = detect_speech_language(user_prompt)
-            if any(
-                w in re.findall(r"[a-zA-Z]+", lower)
-                for w in ("apa", "siapa", "mengapa", "kenapa", "bagaimana", "tolong", "jelaskan", "sebutkan", "berapa", "kapan", "dimana")
-            ):
-                return "id"
-            return lang
+        lower = (user_prompt or "").lower()
+        words = set(re.findall(r"[a-zA-Z]+", lower))
+        indonesian_cues = {
+            "apa", "siapa", "mengapa", "kenapa", "bagaimana", "tolong", "jelaskan",
+            "sebutkan", "berapa", "kapan", "dimana", "buka", "tutup", "cek", "status",
+            "bantuan", "halo", "selamat", "matikan", "hidupkan", "nyalakan", "apakah",
+            "kamu", "bisa", "tolong", "sudah", "sedang", "bukan", "hanya", "coba",
+        }
+        if words.intersection(indonesian_cues):
+            return "id"
         return "en"
 
     @classmethod
@@ -775,7 +776,7 @@ class VoiceController:
         intent = parsed.get("intent")
         target = parsed.get("target")
         detected_id = parsed.get("is_id", False)
-        is_id = (self._resolve_response_language(cmd) == "id")
+        is_id = bool(detected_id or (self._resolve_response_language(cmd) == "id"))
 
         # 1. Fast-path check for vision, pointer, typing, or interaction mode directives.
         # Generic "stop"/"berhenti" is handled by speech/media interrupt unless vision is active or explicit vision directive.
