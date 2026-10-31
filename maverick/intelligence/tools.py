@@ -10,6 +10,11 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from maverick.core.security import ConfirmationRequiredError, SecurityError, redact_sensitive_text
+
+
+class SecurityPolicyViolationError(SecurityError):
+    """Raised when an operation violates sandbox boundaries or filesystem policies."""
+
 from maverick.desktop.awareness import get_running_authorized_apps
 from maverick.desktop.launcher import check_app_status, get_running_pids, launch_app, list_all_apps_status
 
@@ -573,7 +578,7 @@ class ToolRegistry:
 
         # Restrict listing to user home directory hierarchy
         home = os.path.realpath(os.path.expanduser("~"))
-        if not target_dir.startswith(home):
+        if not (target_dir == home or target_dir.startswith(home + "/") or target_dir == "/tmp" or target_dir.startswith("/tmp/")):
             raise SecurityError(f"Access denied: Path '{raw_path}' is outside user home hierarchy.")
 
         if not os.path.isdir(target_dir):
@@ -595,7 +600,7 @@ class ToolRegistry:
         target_file = os.path.realpath(os.path.expanduser(raw_path))
 
         home = os.path.realpath(os.path.expanduser("~"))
-        if not target_file.startswith(home):
+        if not (target_file.startswith(home + "/") or target_file.startswith("/tmp/")):
             raise SecurityError(f"Access denied: File '{raw_path}' is outside user home directory.")
 
         if not os.path.isfile(target_file):
@@ -684,27 +689,40 @@ class ToolRegistry:
 
     def _tool_filesystem_create_dir(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
         raw_path = params.get("path", "")
-        expanded = os.path.expanduser(raw_path)
-        # Sandbox check: must be in home or tmp
-        home = os.path.expanduser("~")
-        if not (expanded.startswith(home) or expanded.startswith("/tmp")):
+        canonical = os.path.realpath(os.path.expanduser(raw_path))
+        home = os.path.realpath(os.path.expanduser("~"))
+        # Sandbox check: canonical path must be inside home or /tmp
+        if not (canonical == home or canonical.startswith(home + "/") or canonical == "/tmp" or canonical.startswith("/tmp/")):
             raise SecurityPolicyViolationError(f"Directory creation restricted to user workspace: {raw_path}")
-        os.makedirs(expanded, exist_ok=True)
-        return {"status": "success", "created_directory": expanded}
+        # Disallow sensitive hidden directories unless explicitly allowed
+        if canonical.startswith(home + "/"):
+            rel = os.path.relpath(canonical, home)
+            for part in rel.split(os.sep):
+                if part.startswith(".") and part not in (".", "..", ".maverick", ".local"):
+                    raise SecurityPolicyViolationError(f"Directory creation in hidden path restricted: {raw_path}")
+        os.makedirs(canonical, exist_ok=True)
+        return {"status": "success", "created_directory": canonical}
 
     def _tool_filesystem_write_file(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
         raw_path = params.get("path", "")
         content = params.get("content", "")
-        expanded = os.path.expanduser(raw_path)
-        home = os.path.expanduser("~")
-        if not (expanded.startswith(home) or expanded.startswith("/tmp")):
+        canonical = os.path.realpath(os.path.expanduser(raw_path))
+        home = os.path.realpath(os.path.expanduser("~"))
+        # Sandbox check: canonical path must be inside home or /tmp
+        if not (canonical.startswith(home + "/") or canonical.startswith("/tmp/")):
             raise SecurityPolicyViolationError(f"File writing restricted to user workspace: {raw_path}")
-        parent = os.path.dirname(expanded)
+        # Disallow writing to sensitive hidden dotfiles (e.g., .ssh, .bashrc, .profile)
+        if canonical.startswith(home + "/"):
+            rel = os.path.relpath(canonical, home)
+            for part in rel.split(os.sep):
+                if part.startswith(".") and part not in (".", "..", ".maverick", ".local"):
+                    raise SecurityPolicyViolationError(f"Writing to sensitive hidden path restricted: {raw_path}")
+        parent = os.path.dirname(canonical)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(expanded, "w", encoding="utf-8") as f:
+        with open(canonical, "w", encoding="utf-8") as f:
             f.write(content)
-        return {"status": "success", "bytes_written": len(content), "path": expanded}
+        return {"status": "success", "bytes_written": len(content), "path": canonical}
 
     def _tool_interaction_mode_toggle(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
         from maverick.vision.vision_controller import VisionController

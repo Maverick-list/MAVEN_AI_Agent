@@ -172,6 +172,35 @@ class TestSecurity(unittest.TestCase):
             reason="Confirmed",
         )
 
+    def test_filesystem_sandbox_path_traversal_prevention(self):
+        from maverick.intelligence.tools import ToolRegistry, SecurityPolicyViolationError
+        reg = ToolRegistry()
+
+        # Path traversal with relative ~ expansion
+        traversal_paths = [
+            "~/../../etc/cron.d/malicious",
+            "~/../../etc/passwd",
+            "~/../../../tmp/../etc/shadow",
+            "~/.ssh/authorized_keys",
+            "~/.bashrc",
+        ]
+        for bad_path in traversal_paths:
+            with self.subTest(bad_path=bad_path):
+                # Calling execute returns security_violation
+                res_create = reg.execute("filesystem_create_dir", {"path": bad_path})
+                self.assertEqual(res_create.get("status"), "security_violation")
+                self.assertIn("restricted", res_create.get("error", "").lower())
+
+                res_write = reg.execute("filesystem_write_file", {"path": bad_path, "content": "echo hack"})
+                self.assertEqual(res_write.get("status"), "security_violation")
+                self.assertIn("restricted", res_write.get("error", "").lower())
+
+                # Calling underlying tool handler directly raises SecurityPolicyViolationError
+                with self.assertRaises(SecurityPolicyViolationError):
+                    reg._tool_filesystem_create_dir({"path": bad_path})
+                with self.assertRaises(SecurityPolicyViolationError):
+                    reg._tool_filesystem_write_file({"path": bad_path, "content": "echo hack"})
+
 
 if __name__ == "__main__":
     unittest.main()

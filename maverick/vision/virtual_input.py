@@ -36,6 +36,8 @@ class VirtualMouse:
         self._current_y = 0
         self._lock = threading.RLock()
         self._atspi = None
+        self._watchdog_timeout = 3.0
+        self._watchdog_timer: Optional[threading.Timer] = None
 
         self._init_backend()
 
@@ -99,7 +101,7 @@ class VirtualMouse:
             return True
 
     def press_and_hold(self, button: MouseButton = MouseButton.LEFT) -> bool:
-        """Press down button and hold for drag-and-drop operations."""
+        """Press down button and hold for drag-and-drop operations with watchdog safety."""
         if not self.enabled:
             return False
 
@@ -114,9 +116,16 @@ class VirtualMouse:
                             self._is_holding_left = True
                         else:
                             self._is_holding_right = True
+                        self._arm_watchdog()
                     return ok
                 except Exception:
                     return False
+            else:
+                if button == MouseButton.LEFT:
+                    self._is_holding_left = True
+                else:
+                    self._is_holding_right = True
+                self._arm_watchdog()
             return True
 
     def release_hold(self, button: MouseButton = MouseButton.LEFT) -> bool:
@@ -133,7 +142,42 @@ class VirtualMouse:
                 self._is_holding_left = False
             else:
                 self._is_holding_right = False
+
+            if not (self._is_holding_left or self._is_holding_right):
+                self._disarm_watchdog()
             return True
+
+    def release_all_holds(self) -> None:
+        """Release all button holds and disarm watchdog timer."""
+        with self._lock:
+            self._disarm_watchdog()
+            if self._is_holding_left:
+                self.release_hold(MouseButton.LEFT)
+            if self._is_holding_right:
+                self.release_hold(MouseButton.RIGHT)
+
+    def _arm_watchdog(self) -> None:
+        """Arm or reset watchdog timer to auto-release stuck holds."""
+        self._disarm_watchdog()
+        self._watchdog_timer = threading.Timer(self._watchdog_timeout, self._on_watchdog_timeout)
+        self._watchdog_timer.daemon = True
+        self._watchdog_timer.start()
+
+    def _disarm_watchdog(self) -> None:
+        """Disarm active watchdog timer."""
+        if self._watchdog_timer is not None:
+            self._watchdog_timer.cancel()
+            self._watchdog_timer = None
+
+    def _on_watchdog_timeout(self) -> None:
+        """Triggered when virtual mouse hold exceeds timeout threshold."""
+        with self._lock:
+            if self._is_holding_left or self._is_holding_right:
+                logger.warning(
+                    "VirtualMouse watchdog triggered: auto-releasing held buttons after %.1fs inactivity",
+                    self._watchdog_timeout,
+                )
+                self.release_all_holds()
 
     def scroll(self, delta_lines: int) -> bool:
         """Scroll vertical wheel by delta_lines (positive = up, negative = down)."""
@@ -157,8 +201,7 @@ class VirtualMouse:
     def emergency_stop(self) -> None:
         """Immediate failsafe release of all mouse presses and disabling."""
         with self._lock:
-            self.release_hold(MouseButton.LEFT)
-            self.release_hold(MouseButton.RIGHT)
+            self.release_all_holds()
             self.enabled = False
 
     def set_enabled(self, enabled: bool) -> None:

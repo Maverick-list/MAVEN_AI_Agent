@@ -2,6 +2,7 @@
 Tests for Coordinate Space Calibration and Virtual Mouse Controller.
 """
 
+import time
 import unittest
 from unittest.mock import MagicMock
 from maverick.vision.calibration import (
@@ -98,6 +99,16 @@ class TestCalibrationAndMouse(unittest.TestCase):
         self.assertIn("cursor", st)
         self.assertIn("is_holding_left", st)
         self.assertIn("backend", st)
+
+    def test_mouse_watchdog_auto_release(self):
+        mouse = VirtualMouse()
+        mouse._watchdog_timeout = 0.05
+        self.assertTrue(mouse.press_and_hold(MouseButton.LEFT))
+        self.assertTrue(mouse._is_holding_left)
+
+        # Wait for watchdog timer to fire
+        time.sleep(0.08)
+        self.assertFalse(mouse._is_holding_left, "Watchdog should have auto-released held mouse button")
 
 
 if __name__ == "__main__":
