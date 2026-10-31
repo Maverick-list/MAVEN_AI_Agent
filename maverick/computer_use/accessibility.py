@@ -7,10 +7,17 @@ state verification, direct activation, and text entry without coordinate guessin
 
 from dataclasses import asdict, dataclass, field
 import logging
+import os
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("maverick.computer_use.accessibility")
+
+# Ensure AT-SPI accessibility bus address is available
+_uid = os.getuid()
+_at_spi_socket = f"/run/user/{_uid}/at-spi/bus"
+if "AT_SPI_BUS_ADDRESS" not in os.environ and os.path.exists(_at_spi_socket):
+    os.environ["AT_SPI_BUS_ADDRESS"] = f"unix:path={_at_spi_socket}"
 
 try:
     import gi

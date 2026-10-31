@@ -17,11 +17,17 @@ Supported States:
 
 from enum import Enum
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("maverick.vision.mode_manager")
+
+_uid = os.getuid()
+_at_spi_socket = f"/run/user/{_uid}/at-spi/bus"
+if "AT_SPI_BUS_ADDRESS" not in os.environ and os.path.exists(_at_spi_socket):
+    os.environ["AT_SPI_BUS_ADDRESS"] = f"unix:path={_at_spi_socket}"
 
 try:
     import gi

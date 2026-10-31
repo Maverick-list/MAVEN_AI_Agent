@@ -18,6 +18,12 @@ import time
 import urllib.parse
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
+# Ensure AT-SPI accessibility bus address is available for non-interactive shells
+_uid = os.getuid()
+_at_spi_socket = f"/run/user/{_uid}/at-spi/bus"
+if "AT_SPI_BUS_ADDRESS" not in os.environ and os.path.exists(_at_spi_socket):
+    os.environ["AT_SPI_BUS_ADDRESS"] = f"unix:path={_at_spi_socket}"
+
 import psutil
 
 from maverick.activity.logger import ActivityLogger
