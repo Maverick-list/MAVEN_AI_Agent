@@ -27,6 +27,8 @@ class TaskStatus(Enum):
     RECOVERING = "recovering"
     COMPLETED = "completed"
     FAILED = "failed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
     PENDING = "pending"  # Backward compatibility alias
 
 
@@ -38,13 +40,14 @@ class TaskStep:
     tool_name: str
     parameters: Dict[str, Any]
     dependencies: List[int] = field(default_factory=list)
-    status: str = "pending"  # pending, running, completed, failed, awaiting_approval, skipped, verifying, recovering
+    status: str = "pending"  # pending, running, completed, failed, awaiting_approval, skipped, blocked, cancelled, verifying, recovering
     requires_approval: bool = False
     result: Optional[Any] = None
     error: Optional[str] = None
     elapsed_ms: float = 0.0
     verification_criteria: Optional[Dict[str, Any]] = None
     rollback_action: Optional[Dict[str, Any]] = None
+    retries_left: int = 0
 
 
 @dataclass
@@ -83,6 +86,7 @@ class TaskPlan:
                 elapsed_ms=s.get("elapsed_ms", 0.0),
                 verification_criteria=s.get("verification_criteria"),
                 rollback_action=s.get("rollback_action"),
+                retries_left=s.get("retries_left", 0),
             ))
         raw_status = data.get("status", "pending")
         try:
@@ -335,12 +339,28 @@ class TaskPlanner:
         return plan
 
     def validate_dag(self, steps: List[TaskStep]) -> Tuple[bool, Optional[str]]:
-        """Validate that step dependencies form a strict directed acyclic graph."""
-        step_ids = {s.step_id for s in steps}
+        """
+        Validate that step dependencies form a strict, well-formed directed acyclic graph.
+        Checks for unique integer IDs, existing dependency references, self-dependencies,
+        and absence of cycles.
+        """
+        if not steps:
+            return True, None
+
+        seen_ids = set()
+        for s in steps:
+            if not isinstance(s.step_id, int):
+                return False, f"Invalid step ID '{s.step_id}': step ID must be an integer."
+            if s.step_id in seen_ids:
+                return False, f"Duplicate step ID detected: {s.step_id}"
+            seen_ids.add(s.step_id)
+
         adj: Dict[int, List[int]] = {s.step_id: [] for s in steps}
         for s in steps:
             for dep in s.dependencies:
-                if dep not in step_ids:
+                if dep == s.step_id:
+                    return False, f"Step {s.step_id} has a self-dependency"
+                if dep not in seen_ids:
                     return False, f"Step {s.step_id} references non-existent dependency {dep}"
                 adj[dep].append(s.step_id)
 
@@ -358,6 +378,54 @@ class TaskPlanner:
         if visited_count != len(steps):
             return False, "Cycle detected in step dependencies"
         return True, None
+
+    def resolve_execution_order(self, steps: List[TaskStep]) -> List[TaskStep]:
+        """
+        Return steps re-ordered into a deterministic topological execution sequence.
+        Raises ValueError if DAG validation fails.
+        """
+        ok, err = self.validate_dag(steps)
+        if not ok:
+            raise ValueError(f"Cannot resolve execution order: {err}")
+
+        step_map = {s.step_id: s for s in steps}
+        adj: Dict[int, List[int]] = {s.step_id: [] for s in steps}
+        in_degree: Dict[int, int] = {s.step_id: len(s.dependencies) for s in steps}
+        for s in steps:
+            for dep in s.dependencies:
+                adj[dep].append(s.step_id)
+
+        queue = sorted([sid for sid, deg in in_degree.items() if deg == 0])
+        ordered_steps: List[TaskStep] = []
+        while queue:
+            curr_id = queue.pop(0)
+            ordered_steps.append(step_map[curr_id])
+            for nxt in adj.get(curr_id, []):
+                in_degree[nxt] -= 1
+                if in_degree[nxt] == 0:
+                    queue.append(nxt)
+            queue.sort()
+
+        return ordered_steps
+
+    def _cascade_blocked_steps(self, plan: TaskPlan, failed_id: int) -> None:
+        """Mark all direct and transitive dependents of a failed/blocked step as blocked."""
+        adj: Dict[int, List[int]] = {s.step_id: [] for s in plan.steps}
+        for s in plan.steps:
+            for dep in s.dependencies:
+                if dep in adj:
+                    adj[dep].append(s.step_id)
+
+        queue = [failed_id]
+        step_map = {s.step_id: s for s in plan.steps}
+        while queue:
+            curr = queue.pop(0)
+            for child_id in adj.get(curr, []):
+                child = step_map.get(child_id)
+                if child and child.status in ("pending", "running", "awaiting_approval"):
+                    child.status = "blocked"
+                    child.error = f"Blocked: dependency step {curr} failed or was cancelled."
+                    queue.append(child_id)
 
     def _verify_step_outcome(self, step: TaskStep) -> Tuple[bool, Optional[str]]:
         """Verify the empirical post-condition outcome of an executed step."""
@@ -392,7 +460,7 @@ class TaskPlanner:
         return True, None
 
     def _execute_rollback(self, step: TaskStep) -> bool:
-        """Execute compensation rollback action for a failed step."""
+        """Execute compensation rollback action for a failed step safely."""
         if not step.rollback_action:
             return False
         action = step.rollback_action
@@ -400,7 +468,7 @@ class TaskPlanner:
         params = action.get("parameters", {})
         if tool:
             try:
-                logger.info("Executing rollback action '%s' for step %d", tool, step.step_id)
+                logger.info("Executing safe rollback action '%s' for step %d", tool, step.step_id)
                 self.tools.execute(tool, params, confirmed=True)
                 return True
             except Exception as exc:
@@ -414,30 +482,100 @@ class TaskPlanner:
         approved_step_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Execute an orchestrated task plan step-by-step with DAG dependencies,
-        approval gating, empirical verification, and persistent state recording.
+        Execute an orchestrated task plan using a dynamic, dependency-aware scheduler.
+        Re-visits steps as dependencies complete, handles out-of-order definitions,
+        enforces strict completion invariants, and persists every transition in SQLite.
         """
+        # 1. Structural graph validation
+        is_valid, dag_err = self.validate_dag(plan.steps)
+        if not is_valid:
+            plan.status = TaskStatus.FAILED
+            self.store.save_plan_data(plan.to_dict())
+            return {
+                "status": "failed",
+                "plan_id": plan.plan_id,
+                "error": f"Invalid DAG structure: {dag_err}",
+                "plan": plan.to_dict(),
+            }
+
         plan.status = TaskStatus.RUNNING
+        # If an approved step was provided, unblock it to pending for execution
+        if approved_step_id is not None:
+            for s in plan.steps:
+                if s.step_id == approved_step_id and s.status == "awaiting_approval":
+                    s.status = "pending"
+            if plan.awaiting_step_id == approved_step_id:
+                plan.awaiting_step_id = None
+
         self.store.save_plan_data(plan.to_dict())
+
         completed_step_ids = {s.step_id for s in plan.steps if s.status == "completed"}
+        skipped_step_ids = {s.step_id for s in plan.steps if s.status == "skipped"}
+        failed_step_ids = {s.step_id for s in plan.steps if s.status in ("failed", "cancelled")}
+        blocked_step_ids = {s.step_id for s in plan.steps if s.status == "blocked"}
 
-        for step in plan.steps:
-            if step.status == "completed":
-                continue
+        # Dynamic scheduling loop
+        while True:
+            # Propagate blocking to any pending step whose dependencies failed/blocked
+            for s in plan.steps:
+                if s.status == "pending":
+                    for dep in s.dependencies:
+                        if dep in failed_step_ids or dep in blocked_step_ids:
+                            s.status = "blocked"
+                            s.error = f"Dependency step {dep} failed or was blocked"
+                            blocked_step_ids.add(s.step_id)
+                            break
 
-            # Verify dependencies
-            deps_met = all(dep in completed_step_ids for dep in step.dependencies)
-            if not deps_met:
-                step.status = "pending"
-                continue
+            # Identify all ready pending steps
+            ready_steps = [
+                s for s in plan.steps
+                if s.status == "pending" and all(dep in completed_step_ids or dep in skipped_step_ids for dep in s.dependencies)
+            ]
 
-            # Check human approval gate
+            # If no pending steps are ready:
+            if not ready_steps:
+                # Check if any step is awaiting approval
+                awaiting = [s for s in plan.steps if s.status == "awaiting_approval"]
+                if awaiting:
+                    plan.status = TaskStatus.AWAITING_APPROVAL
+                    plan.awaiting_step_id = awaiting[0].step_id
+                    self.store.save_plan_data(plan.to_dict())
+                    return {
+                        "status": "awaiting_approval",
+                        "plan_id": plan.plan_id,
+                        "awaiting_step_id": awaiting[0].step_id,
+                        "description": awaiting[0].description,
+                        "tool_name": awaiting[0].tool_name,
+                        "parameters": awaiting[0].parameters,
+                        "plan": plan.to_dict(),
+                    }
+
+                # Check if any uncompleted / blocked / failed steps remain
+                uncompleted = [s for s in plan.steps if s.status not in ("completed", "skipped")]
+                if uncompleted:
+                    plan.status = TaskStatus.FAILED
+                    failed_details = [{"step_id": s.step_id, "status": s.status, "error": s.error} for s in uncompleted]
+                    self.store.save_plan_data(plan.to_dict())
+                    return {
+                        "status": "failed",
+                        "plan_id": plan.plan_id,
+                        "error": f"Plan execution halted with {len(uncompleted)} uncompleted step(s)",
+                        "uncompleted_steps": failed_details,
+                        "plan": plan.to_dict(),
+                    }
+                else:
+                    # Every step is resolved (completed or skipped)
+                    break
+
+            # Pick next ready step (deterministic by lowest step_id)
+            ready_steps.sort(key=lambda s: s.step_id)
+            step = ready_steps[0]
+
+            # Human approval check
             if step.requires_approval:
                 if approved_step_id == step.step_id:
-                    # User granted explicit approval
                     is_confirmed = True
                 else:
-                    # Halt and request human confirmation
                     step.status = "awaiting_approval"
                     plan.status = TaskStatus.AWAITING_APPROVAL
                     plan.awaiting_step_id = step.step_id
@@ -487,10 +625,18 @@ class TaskPlanner:
                     plan.status = TaskStatus.VERIFYING
                     verified, v_err = self._verify_step_outcome(step)
                     if not verified:
+                        if getattr(step, "retries_left", 0) > 0:
+                            step.retries_left -= 1
+                            step.status = "pending"
+                            logger.warning("Step %d verification failed, retrying (%d retries left)", step.step_id, step.retries_left)
+                            continue
+
                         step.status = "failed"
                         step.error = v_err or "Verification failed"
+                        failed_step_ids.add(step.step_id)
                         plan.status = TaskStatus.RECOVERING
                         self._execute_rollback(step)
+                        self._cascade_blocked_steps(plan, step.step_id)
                         plan.status = TaskStatus.FAILED
                         self.store.save_plan_data(plan.to_dict())
                         return {
@@ -503,10 +649,12 @@ class TaskPlanner:
 
                 step.status = "completed"
                 completed_step_ids.add(step.step_id)
+                self.store.save_plan_data(plan.to_dict())
+
             else:
-                step.status = "failed"
                 step.error = exec_res.get("error") or "Execution failure"
-                # Recoverable error handling: if a directory check fails because it doesn't exist yet, continue
+
+                # Recoverable auto-creation for filesystem_list_dir if directory does not exist yet
                 if step.tool_name == "filesystem_list_dir" and ("not found" in str(step.error).lower() or "no such" in str(step.error).lower()):
                     step.status = "skipped"
                     step.error = "Directory does not exist yet; auto-created for project."
@@ -517,10 +665,20 @@ class TaskPlanner:
                             os.makedirs(p_dir, exist_ok=True)
                     except Exception:
                         pass
-                    completed_step_ids.add(step.step_id)
+                    skipped_step_ids.add(step.step_id)
+                    self.store.save_plan_data(plan.to_dict())
                 else:
+                    if getattr(step, "retries_left", 0) > 0:
+                        step.retries_left -= 1
+                        step.status = "pending"
+                        logger.warning("Step %d execution failed, retrying (%d retries left): %s", step.step_id, step.retries_left, step.error)
+                        continue
+
+                    step.status = "failed"
+                    failed_step_ids.add(step.step_id)
                     plan.status = TaskStatus.RECOVERING
                     self._execute_rollback(step)
+                    self._cascade_blocked_steps(plan, step.step_id)
                     plan.status = TaskStatus.FAILED
                     self.store.save_plan_data(plan.to_dict())
                     return {
@@ -531,7 +689,25 @@ class TaskPlanner:
                         "plan": plan.to_dict(),
                     }
 
-        # All steps completed!
+        # FINAL COMPLETION INVARIANT CHECK
+        # A plan may enter COMPLETED only when:
+        # - Every required task has completed successfully.
+        # - Every required post-condition has been verified.
+        # - No pending task remains.
+        # - No blocked task remains.
+        # - No failed required task remains.
+        # - No unresolved execution state remains.
+        for s in plan.steps:
+            if s.status not in ("completed", "skipped"):
+                plan.status = TaskStatus.FAILED
+                self.store.save_plan_data(plan.to_dict())
+                return {
+                    "status": "failed",
+                    "plan_id": plan.plan_id,
+                    "error": f"Completion invariant violated: step {s.step_id} is in status '{s.status}'",
+                    "plan": plan.to_dict(),
+                }
+
         plan.status = TaskStatus.COMPLETED
         plan.completed_at = time.time()
         plan.awaiting_step_id = None
@@ -544,6 +720,38 @@ class TaskPlanner:
             "summary": plan.final_summary,
             "plan": plan.to_dict(),
         }
+
+    def cancel_plan(self, plan_id: str) -> bool:
+        """Cancel an active or pending task plan and its uncompleted steps."""
+        plan = self.get_plan(plan_id)
+        if not plan:
+            return False
+        plan.status = TaskStatus.CANCELLED
+        for s in plan.steps:
+            if s.status in ("pending", "running", "awaiting_approval"):
+                s.status = "cancelled"
+                s.error = "Plan cancelled by user or operator"
+        self.store.save_plan_data(plan.to_dict())
+        return True
+
+    def recover_interrupted_plans(self) -> List[str]:
+        """
+        Startup sweep: reconcile plans that were marked 'running' when a crash or shutdown occurred.
+        Re-marks interrupted 'running' steps as 'pending' so they can safely resume.
+        """
+        running_plans = self.store.list_plans(status="running")
+        recovered = []
+        for p_info in running_plans:
+            pid = p_info["plan_id"]
+            plan = self.get_plan(pid)
+            if plan:
+                for s in plan.steps:
+                    if s.status == "running":
+                        s.status = "pending"
+                        s.error = "Interrupted by system crash/shutdown; ready for resumption."
+                self.store.save_plan_data(plan.to_dict())
+                recovered.append(pid)
+        return recovered
 
     def get_plan(self, plan_id: str) -> Optional[TaskPlan]:
         """Look up plan by ID from in-memory cache or persistent SQLite store."""

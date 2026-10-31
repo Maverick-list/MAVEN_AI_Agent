@@ -110,7 +110,7 @@ class TestVoiceSubsystem(unittest.TestCase):
         self.assertEqual(session.state, VoiceState.SPEAKING)
 
         session.interrupt()
-        self.assertEqual(session.state, VoiceState.IDLE)
+        self.assertEqual(session.state, VoiceState.LISTENING)
         self.assertFalse(mock_tts.is_speaking())
 
     # 7. Silence & Session Timeout

@@ -2,12 +2,14 @@
 
 Generates structured Markdown (.md), Word Document (.docx), and Portable Document
 Format (.pdf) reports directly within user workspaces using standard library capabilities.
-Enforces canonical path sandbox validation.
+Features full multi-page PDF generation with line-wrapping, page numbering, parenthesis escaping,
+and enriched OpenXML DOCX formatting with tables, lists, and page breaks.
 """
 
 import json
 import logging
 import os
+import textwrap
 import time
 from typing import Any, Dict, List, Optional, Union
 import zipfile
@@ -17,16 +19,30 @@ logger = logging.getLogger("maverick.intelligence.tools.documents")
 
 def _validate_workspace_path(raw_path: str) -> str:
     """Ensure path resolves canonically inside user home or /tmp."""
+    if not raw_path:
+        raise PermissionError("Path cannot be empty.")
     canonical = os.path.realpath(os.path.expanduser(raw_path))
     home = os.path.realpath(os.path.expanduser("~"))
+    tmp = "/tmp"
 
-    if not (canonical.startswith(home + "/") or canonical.startswith("/tmp/")):
+    try:
+        in_home = os.path.commonpath([home, canonical]) == home
+    except ValueError:
+        in_home = False
+
+    try:
+        in_tmp = os.path.commonpath([tmp, canonical]) == tmp
+    except ValueError:
+        in_tmp = False
+
+    if not (in_home or in_tmp):
         raise PermissionError(f"Access denied: Path '{raw_path}' resolves outside user workspace.")
 
-    # Restrict access to hidden sensitive directories
-    rel = os.path.relpath(canonical, home)
-    for part in rel.split(os.sep):
-        if part.startswith(".") and part not in (".", "..", ".maverick", ".local"):
+    # Restrict writing to root-level hidden directories
+    if in_home:
+        rel = os.path.relpath(canonical, home)
+        parts = rel.split(os.sep)
+        if len(parts) > 1 and parts[0] in (".ssh", ".gnupg", ".config", ".pki"):
             raise PermissionError(f"Writing to hidden sensitive directory is restricted: {raw_path}")
 
     parent = os.path.dirname(canonical)
@@ -35,10 +51,22 @@ def _validate_workspace_path(raw_path: str) -> str:
     return canonical
 
 
+def _xml_escape(text: Any) -> str:
+    """Escape XML special characters."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _escape_pdf_literal(text: str) -> str:
+    """Escape literal parentheses and backslashes for PDF string operands."""
+    res = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    # Keep characters in Latin-1 range for standard Type 1 fonts
+    return "".join(c if ord(c) < 256 else "?" for c in res)
+
+
 def generate_markdown(
     path: str,
     title: str,
-    sections: List[Dict[str, str]],
+    sections: List[Dict[str, Any]],
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Generate a clean GitHub-flavored Markdown document."""
@@ -54,12 +82,31 @@ def generate_markdown(
     for sec in sections:
         heading = sec.get("heading", "")
         content = sec.get("content", "")
+        bullet_list = sec.get("bullet_list") or []
+        table = sec.get("table") or []
+
         if heading:
             lines.append(f"## {heading}")
             lines.append("")
+
         if content:
             lines.append(content)
             lines.append("")
+
+        if bullet_list:
+            for item in bullet_list:
+                lines.append(f"- {item}")
+            lines.append("")
+
+        if table:
+            # Markdown table
+            if len(table) > 0:
+                header = table[0]
+                lines.append("| " + " | ".join(str(c) for c in header) + " |")
+                lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+                for row in table[1:]:
+                    lines.append("| " + " | ".join(str(c) for c in row) + " |")
+                lines.append("")
 
     md_content = "\n".join(lines)
     with open(target_path, "w", encoding="utf-8") as f:
@@ -77,9 +124,10 @@ def generate_markdown(
 def generate_docx(
     path: str,
     title: str,
-    sections: List[Dict[str, str]],
+    sections: List[Dict[str, Any]],
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Generate a valid Microsoft Word (.docx) document using standard XML package."""
+    """Generate a valid Microsoft Word (.docx) document with tables, lists, and formatting."""
     target_path = _validate_workspace_path(path)
     if not target_path.endswith(".docx"):
         target_path += ".docx"
@@ -103,24 +151,69 @@ def generate_docx(
     )
 
     body_xml_parts = [
-        f'<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="36"/></w:rPr><w:t>{title}</w:t></w:r></w:p>'
+        f'<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="300"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="36"/></w:rPr><w:t>{_xml_escape(title)}</w:t></w:r></w:p>'
     ]
 
     for sec in sections:
         heading = sec.get("heading", "")
         content = sec.get("content", "")
+        bullet_list = sec.get("bullet_list") or []
+        table = sec.get("table") or []
+        page_break = sec.get("page_break", False)
+
         if heading:
             body_xml_parts.append(
                 f'<w:p><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr>'
-                f'<w:r><w:rPr><w:b/><w:sz w:val="28"/></w:rPr><w:t>{heading}</w:t></w:r></w:p>'
+                f'<w:r><w:rPr><w:b/><w:sz w:val="28"/><w:color w:val="2E74B5"/></w:rPr><w:t>{_xml_escape(heading)}</w:t></w:r></w:p>'
             )
+
         if content:
             for p in content.split("\n"):
-                clean_p = p.strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                clean_p = _xml_escape(p.strip())
                 if clean_p:
                     body_xml_parts.append(
-                        f'<w:p><w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t>{clean_p}</w:t></w:r></w:p>'
+                        f'<w:p><w:pPr><w:spacing w:after="120"/></w:pPr>'
+                        f'<w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t>{clean_p}</w:t></w:r></w:p>'
                     )
+
+        if bullet_list:
+            for item in bullet_list:
+                clean_item = _xml_escape(str(item).strip())
+                if clean_item:
+                    body_xml_parts.append(
+                        f'<w:p><w:pPr><w:ind w:left="360"/><w:spacing w:after="60"/></w:pPr>'
+                        f'<w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t>•  {clean_item}</w:t></w:r></w:p>'
+                    )
+
+        if table and len(table) > 0:
+            tbl_parts = [
+                '<w:tbl>',
+                '<w:tblPr>',
+                '<w:tblW w:w="5000" w:type="pct"/>',
+                '<w:tblBorders>',
+                '<w:top w:val="single" w:sz="6" w:space="0" w:color="B0C4DE"/>',
+                '<w:bottom w:val="single" w:sz="6" w:space="0" w:color="B0C4DE"/>',
+                '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="E6E6FA"/>',
+                '</w:tblBorders>',
+                '</w:tblPr>',
+            ]
+            for r_idx, row in enumerate(table):
+                tbl_parts.append('<w:tr>')
+                is_hdr = (r_idx == 0)
+                for cell in row:
+                    clean_cell = _xml_escape(cell)
+                    bold_tag = '<w:b/>' if is_hdr else ''
+                    color_tag = '<w:color w:val="1F497D"/>' if is_hdr else ''
+                    tbl_parts.append(
+                        f'<w:tc><w:p><w:pPr><w:spacing w:after="40"/></w:pPr>'
+                        f'<w:r><w:rPr>{bold_tag}{color_tag}<w:sz w:val="20"/></w:rPr><w:t>{clean_cell}</w:t></w:r></w:p></w:tc>'
+                    )
+                tbl_parts.append('</w:tr>')
+            tbl_parts.append('</w:tbl>')
+            body_xml_parts.append(''.join(tbl_parts))
+
+        if page_break:
+            body_xml_parts.append('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
 
     doc_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
@@ -146,47 +239,159 @@ def generate_docx(
 def generate_pdf(
     path: str,
     title: str,
-    content: str,
+    content: Union[str, List[Dict[str, Any]]],
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Generate a standard PDF 1.4 document."""
+    """
+    Generate a standard multi-page PDF 1.4 document.
+    Features automated text wrapping, page boundaries, running footers, and parenthesis preservation.
+    Never truncates document content.
+    """
     target_path = _validate_workspace_path(path)
     if not target_path.endswith(".pdf"):
         target_path += ".pdf"
 
-    lines = content.split("\n")
-    stream_lines = [
-        "BT",
-        "/F1 16 Tf",
-        "50 750 Td",
-        f"({title.replace('(', '[').replace(')', ']')}) Tj",
-        "ET",
-        "BT",
-        "/F1 10 Tf",
-        "50 720 Td",
-        "13 TL",
-    ]
+    # Normalize content into structured elements
+    elements = []
+    if isinstance(content, str):
+        for raw_line in content.split("\n"):
+            line = raw_line.strip()
+            if not line:
+                elements.append({"type": "spacing"})
+            elif line.startswith("# ") or line.startswith("## ") or line.startswith("### "):
+                elements.append({"type": "heading", "text": line.lstrip("#").strip()})
+            else:
+                elements.append({"type": "paragraph", "text": line})
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                heading = item.get("heading")
+                if heading:
+                    elements.append({"type": "heading", "text": heading})
+                text = item.get("content")
+                if text:
+                    for p in str(text).split("\n"):
+                        p_clean = p.strip()
+                        if p_clean:
+                            elements.append({"type": "paragraph", "text": p_clean})
+                table = item.get("table")
+                if table:
+                    for row in table:
+                        row_str = " | ".join(str(c) for c in row)
+                        elements.append({"type": "table_row", "text": row_str})
+                bullet_list = item.get("bullet_list")
+                if bullet_list:
+                    for b in bullet_list:
+                        elements.append({"type": "bullet", "text": str(b)})
 
-    for line in lines[:50]:
-        clean_line = line.replace("(", "[").replace(")", "]").strip()
-        stream_lines.append(f"({clean_line}) '")
-    stream_lines.append("ET")
+    pages_ops: List[List[str]] = []
+    current_page_ops: List[str] = []
 
-    stream_data = "\n".join(stream_lines).encode("latin1", errors="replace")
-    stream_len = len(stream_data)
+    y = 730
+    line_height = 14
+    margin_left = 50
+    margin_bottom = 60
 
-    objects = [
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj",
-        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj",
-        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj",
-        f"4 0 obj\n<< /Length {stream_len} >>\nstream\n".encode("latin1") + stream_data + b"\nendstream\nendobj",
-        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj",
-    ]
+    # Title on first page
+    title_escaped = _escape_pdf_literal(title)
+    current_page_ops.append(f"BT /F2 16 Tf 50 {y} Td ({title_escaped}) Tj ET")
+    y -= 30
+
+    for elem in elements:
+        e_type = elem.get("type")
+
+        if e_type == "spacing":
+            y -= 8
+            continue
+
+        elif e_type == "heading":
+            h_text = elem.get("text", "")
+            if y < margin_bottom + 40:
+                pages_ops.append(current_page_ops)
+                current_page_ops = []
+                y = 730
+            y -= 10
+            h_esc = _escape_pdf_literal(h_text)
+            current_page_ops.append(f"BT /F2 12 Tf {margin_left} {y} Td ({h_esc}) Tj ET")
+            y -= 18
+
+        elif e_type in ("paragraph", "table_row", "bullet"):
+            raw_text = elem.get("text", "")
+            prefix = "• " if e_type == "bullet" else ""
+            indent = 15 if e_type == "bullet" else 0
+            full_text = prefix + raw_text
+
+            wrapped = textwrap.wrap(full_text, width=78)
+            for w_line in wrapped:
+                if y < margin_bottom:
+                    pages_ops.append(current_page_ops)
+                    current_page_ops = []
+                    y = 730
+
+                line_esc = _escape_pdf_literal(w_line)
+                font_name = "/F1"
+                current_page_ops.append(f"BT {font_name} 10 Tf {margin_left + indent} {y} Td ({line_esc}) Tj ET")
+                y -= line_height
+
+    if current_page_ops:
+        pages_ops.append(current_page_ops)
+
+    num_pages = len(pages_ops)
+    if num_pages == 0:
+        num_pages = 1
+        pages_ops.append([f"BT /F1 10 Tf 50 700 Td ({_escape_pdf_literal(title)}) Tj ET"])
+
+    # Add running page footers to all pages
+    for i, ops in enumerate(pages_ops, start=1):
+        footer_text = _escape_pdf_literal(f"Page {i} of {num_pages}")
+        ops.append(f"BT /F1 9 Tf 280 36 Td ({footer_text}) Tj ET")
+
+    # Construct standard PDF 1.4 Object Structure
+    page_obj_ids = [3 + i for i in range(num_pages)]
+    content_obj_ids = [3 + num_pages + i for i in range(num_pages)]
+    font1_id = 3 + 2 * num_pages
+    font2_id = font1_id + 1
+
+    kids_str = " ".join(f"{pid} 0 R" for pid in page_obj_ids)
+
+    catalog_bytes = b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    pages_root_bytes = f"2 0 obj\n<< /Type /Pages /Kids [{kids_str}] /Count {num_pages} >>\nendobj\n".encode("latin1")
+
+    obj_bytes_list = [catalog_bytes, pages_root_bytes]
+
+    for i in range(num_pages):
+        p_id = page_obj_ids[i]
+        c_id = content_obj_ids[i]
+        p_bytes = (
+            f"{p_id} 0 obj\n"
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Contents {c_id} 0 R "
+            f"/Resources << /Font << /F1 {font1_id} 0 R /F2 {font2_id} 0 R >> >> >>\n"
+            f"endobj\n"
+        ).encode("latin1")
+        obj_bytes_list.append(p_bytes)
+
+    for i in range(num_pages):
+        c_id = content_obj_ids[i]
+        stream_content = "\n".join(pages_ops[i]).encode("latin1", errors="replace")
+        stream_len = len(stream_content)
+        c_bytes = (
+            f"{c_id} 0 obj\n<< /Length {stream_len} >>\nstream\n".encode("latin1")
+            + stream_content
+            + b"\nendstream\nendobj\n"
+        )
+        obj_bytes_list.append(c_bytes)
+
+    font1_bytes = f"{font1_id} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".encode("latin1")
+    font2_bytes = f"{font2_id} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n".encode("latin1")
+    obj_bytes_list.append(font1_bytes)
+    obj_bytes_list.append(font2_bytes)
 
     output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     xref = [0]
-    for obj in objects:
+    for obj_data in obj_bytes_list:
         xref.append(len(output))
-        output.extend(obj + b"\n")
+        output.extend(obj_data)
 
     xref_offset = len(output)
     output.extend(f"xref\n0 {len(xref)}\n0000000000 65535 f \n".encode("latin1"))
@@ -203,5 +408,6 @@ def generate_pdf(
         "format": "pdf",
         "path": target_path,
         "bytes_written": len(output),
-        "lines_count": len(lines),
+        "pages_count": num_pages,
+        "elements_count": len(elements),
     }

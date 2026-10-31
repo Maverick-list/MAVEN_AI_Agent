@@ -639,14 +639,88 @@ class ToolRegistry:
             "stderr": proc.stderr.strip() if proc.stderr else None,
         }
 
+    def _validate_workspace_path(self, raw_path: str) -> str:
+        """
+        Validate that raw_path resolves canonically within the user workspace ($HOME or /tmp).
+        Uses os.path.commonpath to prevent prefix collisions and traversal escapes.
+        """
+        if not raw_path:
+            raise SecurityPolicyViolationError("Filesystem path cannot be empty.")
+        canonical = os.path.realpath(os.path.expanduser(raw_path))
+        home = os.path.realpath(os.path.expanduser("~"))
+        tmp = "/tmp"
+
+        try:
+            in_home = os.path.commonpath([home, canonical]) == home
+        except ValueError:
+            in_home = False
+
+        try:
+            in_tmp = os.path.commonpath([tmp, canonical]) == tmp
+        except ValueError:
+            in_tmp = False
+
+        if not (in_home or in_tmp):
+            raise SecurityPolicyViolationError(
+                f"Access restricted to user workspace: Path '{raw_path}' resolves outside permitted roots ({canonical})."
+            )
+        return canonical
+
+    def _check_dotfile_policy(self, canonical: str, raw_path: str, is_write: bool = False, confirmed: bool = False) -> None:
+        """
+        Enforce safe, developer-friendly dotfile policy:
+        1. Allows legitimate project configuration files (.gitignore, .editorconfig, .vscode/, etc.)
+        2. Strictly blocks access to root-level system configs (~/.ssh, ~/.gnupg, ~/.bashrc, ~/.profile)
+        3. Requires explicit confirmation for environment secret files (.env, .env.*) on write
+        """
+        file_name = os.path.basename(canonical)
+
+        # Global check: writing or modifying .env files requires explicit confirmation
+        if is_write and (file_name == ".env" or file_name.startswith(".env.")):
+            if not confirmed:
+                raise ConfirmationRequiredError(
+                    action="write_environment_secret",
+                    target=raw_path,
+                    reason="Writing or modifying .env environment secret files requires explicit user confirmation."
+                )
+
+        home = os.path.realpath(os.path.expanduser("~"))
+        if not canonical.startswith(home):
+            base = os.path.basename(canonical)
+            if base in (".ssh", ".gnupg", "id_rsa", "id_ed25519"):
+                raise SecurityPolicyViolationError(f"Restricted sensitive target in /tmp: {raw_path}")
+            return
+
+        rel = os.path.relpath(canonical, home)
+        parts = rel.split(os.sep)
+
+        # 1. Root user configuration directly in home (e.g. ~/.bashrc, ~/.profile, ~/.ssh)
+        if len(parts) == 1:
+            part = parts[0]
+            if part.startswith(".") and part not in (".maverick", ".local"):
+                raise SecurityPolicyViolationError(
+                    f"Access to root user configuration restricted: '{raw_path}'"
+                )
+
+        # 2. In a subdirectory under home:
+        if len(parts) > 1:
+            first_dir = parts[0]
+            if first_dir in (".ssh", ".gnupg", ".config", ".pki", ".password-store", ".gnome"):
+                raise SecurityPolicyViolationError(
+                    f"Access to protected user security directory '{first_dir}' is restricted: '{raw_path}'"
+                )
+
+            # Check hidden directory components
+            for d in parts[:-1]:
+                if d.startswith(".") and d not in (".vscode", ".git", ".github", ".maverick", ".idea", ".husky"):
+                    raise SecurityPolicyViolationError(
+                        f"Directory component '{d}' in path '{raw_path}' is a restricted hidden directory."
+                    )
+
     def _tool_filesystem_list_dir(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
         raw_path = params.get("path") or "~"
-        target_dir = os.path.realpath(os.path.expanduser(raw_path))
-
-        # Restrict listing to user home directory hierarchy
-        home = os.path.realpath(os.path.expanduser("~"))
-        if not (target_dir == home or target_dir.startswith(home + "/") or target_dir == "/tmp" or target_dir.startswith("/tmp/")):
-            raise SecurityError(f"Access denied: Path '{raw_path}' is outside user home hierarchy.")
+        target_dir = self._validate_workspace_path(raw_path)
+        self._check_dotfile_policy(target_dir, raw_path, is_write=False, confirmed=False)
 
         if not os.path.isdir(target_dir):
             raise FileNotFoundError(f"Directory not found: '{raw_path}'")
@@ -664,11 +738,8 @@ class ToolRegistry:
 
     def _tool_filesystem_read_file(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
         raw_path = params.get("path", "")
-        target_file = os.path.realpath(os.path.expanduser(raw_path))
-
-        home = os.path.realpath(os.path.expanduser("~"))
-        if not (target_file.startswith(home + "/") or target_file.startswith("/tmp/")):
-            raise SecurityError(f"Access denied: File '{raw_path}' is outside user home directory.")
+        target_file = self._validate_workspace_path(raw_path)
+        self._check_dotfile_policy(target_file, raw_path, is_write=False, confirmed=False)
 
         if not os.path.isfile(target_file):
             raise FileNotFoundError(f"File not found: '{raw_path}'")
@@ -754,42 +825,66 @@ class ToolRegistry:
         screen = ScreenIntelligence()
         return screen.explain_screen()
 
-    def _tool_filesystem_create_dir(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+    def _tool_filesystem_create_dir(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
         raw_path = params.get("path", "")
-        canonical = os.path.realpath(os.path.expanduser(raw_path))
-        home = os.path.realpath(os.path.expanduser("~"))
-        # Sandbox check: canonical path must be inside home or /tmp
-        if not (canonical == home or canonical.startswith(home + "/") or canonical == "/tmp" or canonical.startswith("/tmp/")):
-            raise SecurityPolicyViolationError(f"Directory creation restricted to user workspace: {raw_path}")
-        # Disallow sensitive hidden directories unless explicitly allowed
-        if canonical.startswith(home + "/"):
-            rel = os.path.relpath(canonical, home)
-            for part in rel.split(os.sep):
-                if part.startswith(".") and part not in (".", "..", ".maverick", ".local"):
-                    raise SecurityPolicyViolationError(f"Directory creation in hidden path restricted: {raw_path}")
+        canonical = self._validate_workspace_path(raw_path)
+        self._check_dotfile_policy(canonical, raw_path, is_write=True, confirmed=confirmed)
         os.makedirs(canonical, exist_ok=True)
         return {"status": "success", "created_directory": canonical}
 
     def _tool_filesystem_write_file(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
         raw_path = params.get("path", "")
         content = params.get("content", "")
-        canonical = os.path.realpath(os.path.expanduser(raw_path))
-        home = os.path.realpath(os.path.expanduser("~"))
-        # Sandbox check: canonical path must be inside home or /tmp
-        if not (canonical.startswith(home + "/") or canonical.startswith("/tmp/")):
-            raise SecurityPolicyViolationError(f"File writing restricted to user workspace: {raw_path}")
-        # Disallow writing to sensitive hidden dotfiles (e.g., .ssh, .bashrc, .profile)
-        if canonical.startswith(home + "/"):
-            rel = os.path.relpath(canonical, home)
-            for part in rel.split(os.sep):
-                if part.startswith(".") and part not in (".", "..", ".maverick", ".local"):
-                    raise SecurityPolicyViolationError(f"Writing to sensitive hidden path restricted: {raw_path}")
+        canonical = self._validate_workspace_path(raw_path)
+
+        # Enforce dotfile policy
+        self._check_dotfile_policy(canonical, raw_path, is_write=True, confirmed=confirmed)
+
         parent = os.path.dirname(canonical)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(canonical, "w", encoding="utf-8") as f:
-            f.write(content)
-        return {"status": "success", "bytes_written": len(content), "path": canonical}
+
+        # Overwrite Protection: Never silently truncate existing files without confirmation
+        is_overwrite = os.path.exists(canonical)
+        if is_overwrite and not confirmed:
+            raise ConfirmationRequiredError(
+                action="overwrite_file",
+                target=raw_path,
+                reason=f"Destination file '{raw_path}' already exists ({os.path.getsize(canonical)} bytes). Explicit confirmation is required to overwrite."
+            )
+
+        # Create recoverable backup if overwriting existing file
+        backup_path = None
+        if is_overwrite:
+            try:
+                backup_path = canonical + f".bak.{int(time.time() * 1000)}"
+                shutil.copy2(canonical, backup_path)
+            except Exception as e:
+                logger.debug("Could not create pre-write backup: %s", e)
+
+        # Atomic write: write to temp file then atomic rename
+        temp_target = canonical + f".tmp.{os.getpid()}_{int(time.time() * 1000)}"
+        try:
+            with open(temp_target, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(temp_target, canonical)
+        except Exception:
+            if os.path.exists(temp_target):
+                try:
+                    os.remove(temp_target)
+                except Exception:
+                    pass
+            raise
+
+        res = {
+            "status": "success",
+            "bytes_written": len(content.encode("utf-8")),
+            "path": canonical,
+            "overwritten": is_overwrite,
+        }
+        if backup_path:
+            res["backup_path"] = backup_path
+        return res
 
     def _tool_interaction_mode_toggle(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
         from maverick.vision.vision_controller import VisionController

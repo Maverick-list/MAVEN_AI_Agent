@@ -179,6 +179,7 @@ class VoiceConfig:
     # Voice Activity Detection (VAD) & speech boundaries
     silence_threshold_rms: float = 0.015
     speech_start_threshold_rms: float = 0.025
+    barge_in_threshold_rms: float = 0.18
     silence_duration_seconds: float = 1.2
     listening_timeout_seconds: float = 8.0
 

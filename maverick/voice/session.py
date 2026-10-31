@@ -103,13 +103,24 @@ class VoiceSession:
             self._muted = muted
             self.audio.set_muted(muted)
 
-    def interrupt(self) -> None:
-        """Stop TTS speech and return session to IDLE immediately."""
+    def interrupt(self, preserve_audio: Optional[bytes] = None) -> None:
+        """Stop TTS speech, preserve incoming audio buffer, and transition immediately to LISTENING."""
         voice_logger.tts_interrupted()
         self.tts.stop()
         self._transition_to(VoiceState.INTERRUPTED)
-        time.sleep(0.05)
-        self._transition_to(VoiceState.IDLE)
+        self.last_trigger_source = "barge_in"
+
+        # Preserve the onset speech buffer and transition directly to LISTENING
+        self._audio_buffer.clear()
+        if preserve_audio:
+            self._audio_buffer.extend(preserve_audio)
+            self._has_detected_speech = True
+        else:
+            self._has_detected_speech = False
+
+        self._listen_start_time = time.time()
+        self._last_speech_time = self._listen_start_time
+        self._transition_to(VoiceState.LISTENING)
 
     def trigger_wake_word(self, source: str = "ui") -> None:
         """Programmatically trigger wake-word state (e.g. from UI keypress or clap)."""
@@ -147,10 +158,10 @@ class VoiceSession:
             if chunk:
                 rms = calculate_rms(chunk)
                 noise_floor = getattr(self.wake_detector, "_noise_floor", 0.05) or 0.05
-                # Distinct acoustic onset during playback interrupts assistant speech immediately
-                if rms > max(0.22, noise_floor * 3.8):
-                    voice_logger.tts_interrupted()
-                    self.interrupt()
+                # Distinct acoustic onset during playback interrupts assistant speech and transitions to listening
+                threshold = max(getattr(self.config, "barge_in_threshold_rms", 0.18), noise_floor * 3.5)
+                if rms >= threshold:
+                    self.interrupt(preserve_audio=chunk)
                     return None
             time.sleep(0.04)
             return None
