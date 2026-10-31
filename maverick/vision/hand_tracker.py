@@ -617,3 +617,7 @@ class HandTracker:
 
     def get_provider_name(self) -> str:
         return self.provider.get_name()
+
+    @property
+    def provider_name(self) -> str:
+        return self.get_provider_name()

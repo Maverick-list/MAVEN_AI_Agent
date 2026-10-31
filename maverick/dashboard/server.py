@@ -1189,14 +1189,14 @@ class TelemetryHub:
 
     def test_camera(self) -> Dict[str, Any]:
         """Enumerate camera and capture a single test frame to verify hardware pipeline."""
-        cam = self.vision_controller.camera
+        cam = getattr(self.vision_controller, "camera", None) or self.vision_controller.engine.camera
         was_running = cam.is_running
         if not was_running:
             ok = cam.start()
             if not ok:
                 return {"status": "error", "message": "Failed to start camera device"}
         try:
-            ok, frame = cam.read_frame(timeout_sec=1.5)
+            ok, frame, _ = cam.read_frame(timeout_sec=1.5)
             if not ok or frame is None:
                 return {"status": "error", "message": "Failed to read frame from camera"}
             h, w = frame.shape[:2]
@@ -1207,6 +1207,8 @@ class TelemetryHub:
                 "fps": cam.fps,
                 "is_active": cam.is_running,
             }
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
         finally:
             if not was_running:
                 cam.stop()
@@ -1218,40 +1220,49 @@ class TelemetryHub:
         except ImportError:
             return None, "OpenCV is not available"
 
-        cam = self.vision_controller.camera
+        cam = getattr(self.vision_controller, "camera", None) or self.vision_controller.engine.camera
         if not cam.is_running:
             return None, "Camera is offline"
-        ok, frame = cam.read_frame(timeout_sec=0.5)
-        if not ok or frame is None:
-            return None, "No frame available"
-        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not ok:
-            return None, "Encoding failed"
-        return buf.tobytes(), "ok"
+        try:
+            ok, frame, _ = cam.read_frame(timeout_sec=0.5)
+            if not ok or frame is None:
+                return None, "No frame available"
+            ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if not ok:
+                return None, "Encoding failed"
+            return buf.tobytes(), "ok"
+        except Exception as exc:
+            return None, str(exc)
 
     def test_gesture(self) -> Dict[str, Any]:
         """Run a single-frame gesture inference test on the live camera or provider."""
-        cam = self.vision_controller.camera
+        cam = getattr(self.vision_controller, "camera", None) or self.vision_controller.engine.camera
         was_running = cam.is_running
         if not was_running:
             ok = cam.start()
             if not ok:
                 return {"status": "error", "message": "Failed to start camera device"}
         try:
-            ok, frame = cam.read_frame(timeout_sec=1.5)
+            ok, frame, _ = cam.read_frame(timeout_sec=1.5)
             if not ok or frame is None:
                 return {"status": "error", "message": "Failed to read frame"}
-            tracker = self.vision_controller.hand_tracker
-            hands = tracker.detect_hands(frame)
+            tracker = getattr(self.vision_controller, "hand_tracker", None) or self.vision_controller.engine.tracker
+            hands = tracker.process_frame(frame)
             gesture = None
             if hands:
-                gesture = self.vision_controller.gesture_classifier.classify(hands[0])
+                recognizer = getattr(self.vision_controller, "gesture_classifier", None) or self.vision_controller.engine.recognizer
+                if hasattr(recognizer, "recognize"):
+                    gesture = recognizer.recognize(hands[0])
+                elif hasattr(recognizer, "classify"):
+                    gesture = recognizer.classify(hands[0])
             return {
                 "status": "success",
                 "hands_detected": len(hands),
                 "gesture": gesture.name if gesture else "NO_HANDS",
                 "provider": tracker.provider_name,
             }
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
         finally:
             if not was_running:
                 cam.stop()

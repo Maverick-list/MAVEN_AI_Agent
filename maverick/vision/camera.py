@@ -77,6 +77,21 @@ class CameraManager:
         node = f"/dev/video{self.device_index}"
         return os.path.exists(node) and os.access(node, os.R_OK)
 
+    @property
+    def is_running(self) -> bool:
+        """Return whether camera capture thread is running."""
+        return self._is_running
+
+    @property
+    def is_active(self) -> bool:
+        """Return whether camera is active."""
+        return self._is_active
+
+    @property
+    def fps(self) -> float:
+        """Return current or target fps."""
+        return self._fps_actual or float(self.target_fps)
+
     def start(self) -> bool:
         """Start the background camera frame acquisition thread."""
         with self._lock:
