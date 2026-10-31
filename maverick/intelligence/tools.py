@@ -512,6 +512,73 @@ class ToolRegistry:
             handler=self._tool_computer_emergency_stop,
         ))
 
+        # 26. Codebase Find Symbols (AST)
+        self.register(ToolDefinition(
+            name="codebase_find_symbols",
+            description="Locate class and function definitions, signatures, and docstrings in a workspace Python codebase via AST.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace directory or file path"},
+                    "symbol_name": {"type": "string", "description": "Optional class or function name substring"},
+                },
+                "required": ["path"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_codebase_find_symbols,
+        ))
+
+        # 27. Codebase Grep Pattern
+        self.register(ToolDefinition(
+            name="codebase_grep",
+            description="Perform fast regex pattern search across code files in an authorized workspace.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace directory path"},
+                    "pattern": {"type": "string", "description": "Regex pattern string"},
+                    "file_pattern": {"type": "string", "description": "Filename filter (default: *.py)"},
+                },
+                "required": ["path", "pattern"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_codebase_grep,
+        ))
+
+        # 28. Document Generation (.md, .docx, .pdf)
+        self.register(ToolDefinition(
+            name="document_generate",
+            description="Generate formatted Markdown (.md), Microsoft Word (.docx), or PDF (.pdf) documents in user workspace.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "format": {"type": "string", "enum": ["markdown", "docx", "pdf"], "description": "Output format"},
+                    "path": {"type": "string", "description": "Target output file path"},
+                    "title": {"type": "string", "description": "Document title"},
+                    "sections": {"type": "array", "description": "List of {heading, content} section dicts"},
+                    "content": {"type": "string", "description": "Direct text content for single-page documents"},
+                },
+                "required": ["format", "path", "title"],
+            },
+            risk=ToolRisk.CONSEQUENTIAL,
+            handler=self._tool_document_generate,
+        ))
+
+        # 29. Web Research & Synthesis
+        self.register(ToolDefinition(
+            name="web_research_synthesize",
+            description="Investigate an inquiry topic across browser tabs and knowledge dimensions, returning structured findings.",
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Research question or investigation topic"},
+                },
+                "required": ["query"],
+            },
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_web_research_synthesize,
+        ))
+
     # --- Tool Handlers ---
 
     def _tool_desktop_launch_app(self, params: Dict[str, Any], confirmed: bool = False) -> Dict[str, Any]:
@@ -796,4 +863,51 @@ class ToolRegistry:
         agent = self._get_computer_agent()
         agent.emergency_stop()
         return {"status": "success", "message": "Universal Computer Use Emergency Stop engaged."}
+
+    def _tool_codebase_find_symbols(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        from maverick.intelligence.toolkit.codebase import codebase_find_symbols
+        path = params.get("path") or "."
+        name = params.get("symbol_name")
+        return codebase_find_symbols(target_path=path, symbol_name=name)
+
+    def _tool_codebase_grep(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        from maverick.intelligence.toolkit.codebase import codebase_grep
+        path = params.get("path") or "."
+        pat = params.get("pattern", "")
+        file_pat = params.get("file_pattern", "*.py")
+        return codebase_grep(target_path=path, pattern=pat, file_pattern=file_pat)
+
+    def _tool_document_generate(self, params: Dict[str, Any], confirmed: bool = False, **_) -> Dict[str, Any]:
+        from maverick.intelligence.toolkit.documents import generate_markdown, generate_docx, generate_pdf
+        doc_format = (params.get("format") or "markdown").lower()
+        path = params.get("path", "")
+        title = params.get("title", "Document")
+        sections = params.get("sections") or []
+        content = params.get("content", "")
+
+        if doc_format in ("md", "markdown"):
+            return generate_markdown(
+                path=path,
+                title=title,
+                sections=sections if sections else [{"heading": "Content", "content": content}],
+            )
+        elif doc_format in ("docx", "word"):
+            return generate_docx(
+                path=path,
+                title=title,
+                sections=sections if sections else [{"heading": "Content", "content": content}],
+            )
+        elif doc_format == "pdf":
+            text_body = content
+            if not text_body and sections:
+                text_body = "\n\n".join([f"{s.get('heading', '')}\n{s.get('content', '')}" for s in sections])
+            return generate_pdf(path=path, title=title, content=text_body)
+        else:
+            return {"status": "error", "error": f"Unsupported document format: {doc_format}"}
+
+    def _tool_web_research_synthesize(self, params: Dict[str, Any], **_) -> Dict[str, Any]:
+        from maverick.intelligence.toolkit.research import ResearchAssistant
+        query = params.get("query", "")
+        assistant = ResearchAssistant()
+        return assistant.search_and_synthesize(query=query)
 

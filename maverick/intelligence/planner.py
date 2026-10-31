@@ -3,23 +3,31 @@
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 import json
+import logging
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from maverick.intelligence.memory import ContextMemory
+from maverick.intelligence.task_store import TaskStore
 from maverick.intelligence.tools import ToolRegistry, ToolRisk
+
+logger = logging.getLogger("maverick.intelligence.planner")
 
 
 class TaskStatus(Enum):
-    """Lifecycle statuses of orchestrated multi-step task plans."""
-    PENDING = "pending"
+    """Formal lifecycle statuses of orchestrated multi-step task plans."""
+    CREATED = "created"
+    UNDERSTANDING = "understanding"
     PLANNING = "planning"
-    RUNNING = "running"
     AWAITING_APPROVAL = "awaiting_approval"
+    RUNNING = "running"
+    EXECUTING = "executing"
+    VERIFYING = "verifying"
+    RECOVERING = "recovering"
     COMPLETED = "completed"
     FAILED = "failed"
-    RECOVERING = "recovering"
+    PENDING = "pending"  # Backward compatibility alias
 
 
 @dataclass
@@ -30,11 +38,13 @@ class TaskStep:
     tool_name: str
     parameters: Dict[str, Any]
     dependencies: List[int] = field(default_factory=list)
-    status: str = "pending"  # pending, running, completed, failed, awaiting_approval, skipped
+    status: str = "pending"  # pending, running, completed, failed, awaiting_approval, skipped, verifying, recovering
     requires_approval: bool = False
     result: Optional[Any] = None
     error: Optional[str] = None
     elapsed_ms: float = 0.0
+    verification_criteria: Optional[Dict[str, Any]] = None
+    rollback_action: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -55,6 +65,42 @@ class TaskPlan:
         d["status"] = self.status.value
         return d
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskPlan":
+        """Reconstruct TaskPlan instance from dictionary or SQLite record."""
+        steps = []
+        for s in data.get("steps", []):
+            steps.append(TaskStep(
+                step_id=s.get("step_id", 1),
+                description=s.get("description", ""),
+                tool_name=s.get("tool_name", ""),
+                parameters=s.get("parameters", {}),
+                dependencies=s.get("dependencies", []),
+                status=s.get("status", "pending"),
+                requires_approval=s.get("requires_approval", False),
+                result=s.get("result"),
+                error=s.get("error"),
+                elapsed_ms=s.get("elapsed_ms", 0.0),
+                verification_criteria=s.get("verification_criteria"),
+                rollback_action=s.get("rollback_action"),
+            ))
+        raw_status = data.get("status", "pending")
+        try:
+            status = TaskStatus(raw_status)
+        except ValueError:
+            status = TaskStatus.PENDING
+
+        return cls(
+            plan_id=data.get("plan_id", ""),
+            goal=data.get("goal", ""),
+            steps=steps,
+            status=status,
+            created_at=data.get("created_at", time.time()),
+            completed_at=data.get("completed_at"),
+            awaiting_step_id=data.get("awaiting_step_id"),
+            final_summary=data.get("final_summary"),
+        )
+
 
 class TaskPlanner:
     """
@@ -66,9 +112,11 @@ class TaskPlanner:
         self,
         tool_registry: Optional[ToolRegistry] = None,
         memory: Optional[ContextMemory] = None,
+        task_store: Optional[TaskStore] = None,
     ):
         self.memory = memory or ContextMemory()
         self.tools = tool_registry or ToolRegistry(memory_engine=self.memory)
+        self.store = task_store or TaskStore()
         self._active_plans: Dict[str, TaskPlan] = {}
 
     def plan(self, instruction: str) -> TaskPlan:
@@ -274,11 +322,91 @@ class TaskPlanner:
             plan_id=plan_id,
             goal=clean_goal,
             steps=steps,
-            status=TaskStatus.PENDING,
+            status=TaskStatus.CREATED,
         )
 
+        # Validate DAG dependencies
+        is_valid_dag, dag_err = self.validate_dag(steps)
+        if not is_valid_dag:
+            logger.warning("Plan %s has invalid DAG structure: %s", plan_id, dag_err)
+
         self._active_plans[plan_id] = plan
+        self.store.save_plan_data(plan.to_dict())
         return plan
+
+    def validate_dag(self, steps: List[TaskStep]) -> Tuple[bool, Optional[str]]:
+        """Validate that step dependencies form a strict directed acyclic graph."""
+        step_ids = {s.step_id for s in steps}
+        adj: Dict[int, List[int]] = {s.step_id: [] for s in steps}
+        for s in steps:
+            for dep in s.dependencies:
+                if dep not in step_ids:
+                    return False, f"Step {s.step_id} references non-existent dependency {dep}"
+                adj[dep].append(s.step_id)
+
+        in_degree = {s.step_id: len(s.dependencies) for s in steps}
+        queue = [sid for sid, deg in in_degree.items() if deg == 0]
+        visited_count = 0
+        while queue:
+            curr = queue.pop(0)
+            visited_count += 1
+            for nxt in adj.get(curr, []):
+                in_degree[nxt] -= 1
+                if in_degree[nxt] == 0:
+                    queue.append(nxt)
+
+        if visited_count != len(steps):
+            return False, "Cycle detected in step dependencies"
+        return True, None
+
+    def _verify_step_outcome(self, step: TaskStep) -> Tuple[bool, Optional[str]]:
+        """Verify the empirical post-condition outcome of an executed step."""
+        if not step.verification_criteria:
+            return True, None
+
+        crit = step.verification_criteria
+        crit_type = crit.get("type")
+
+        if crit_type == "file_exists":
+            path = os.path.realpath(os.path.expanduser(crit.get("path", "")))
+            if not os.path.exists(path):
+                return False, f"Verification failed: expected file '{path}' does not exist."
+            min_bytes = crit.get("min_size_bytes", 0)
+            if min_bytes > 0 and os.path.getsize(path) < min_bytes:
+                return False, f"Verification failed: file '{path}' size ({os.path.getsize(path)} bytes) is below expected minimum ({min_bytes} bytes)."
+            return True, None
+
+        elif crit_type == "directory_exists":
+            path = os.path.realpath(os.path.expanduser(crit.get("path", "")))
+            if not os.path.isdir(path):
+                return False, f"Verification failed: expected directory '{path}' does not exist."
+            return True, None
+
+        elif crit_type == "exit_code_zero":
+            if isinstance(step.result, dict):
+                code = step.result.get("exit_code")
+                if code is not None and code != 0:
+                    return False, f"Verification failed: expected exit code 0, got {code}."
+            return True, None
+
+        return True, None
+
+    def _execute_rollback(self, step: TaskStep) -> bool:
+        """Execute compensation rollback action for a failed step."""
+        if not step.rollback_action:
+            return False
+        action = step.rollback_action
+        tool = action.get("tool_name")
+        params = action.get("parameters", {})
+        if tool:
+            try:
+                logger.info("Executing rollback action '%s' for step %d", tool, step.step_id)
+                self.tools.execute(tool, params, confirmed=True)
+                return True
+            except Exception as exc:
+                logger.warning("Rollback action failed: %s", exc)
+                return False
+        return False
 
     def execute_plan(
         self,
@@ -286,11 +414,11 @@ class TaskPlanner:
         approved_step_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Execute an orchestrated task plan step-by-step.
-        Pauses and returns status 'awaiting_approval' whenever a step requires human confirmation.
-        Resumes execution when approved_step_id matches the awaiting step.
+        Execute an orchestrated task plan step-by-step with DAG dependencies,
+        approval gating, empirical verification, and persistent state recording.
         """
         plan.status = TaskStatus.RUNNING
+        self.store.save_plan_data(plan.to_dict())
         completed_step_ids = {s.step_id for s in plan.steps if s.status == "completed"}
 
         for step in plan.steps:
@@ -313,6 +441,7 @@ class TaskPlanner:
                     step.status = "awaiting_approval"
                     plan.status = TaskStatus.AWAITING_APPROVAL
                     plan.awaiting_step_id = step.step_id
+                    self.store.save_plan_data(plan.to_dict())
                     return {
                         "status": "awaiting_approval",
                         "plan_id": plan.plan_id,
@@ -339,6 +468,7 @@ class TaskPlanner:
                 step.status = "awaiting_approval"
                 plan.status = TaskStatus.AWAITING_APPROVAL
                 plan.awaiting_step_id = step.step_id
+                self.store.save_plan_data(plan.to_dict())
                 return {
                     "status": "awaiting_approval",
                     "plan_id": plan.plan_id,
@@ -350,8 +480,28 @@ class TaskPlanner:
                 }
 
             if exec_res.get("status") == "success":
-                step.status = "completed"
                 step.result = exec_res.get("result")
+
+                # Verification Stage
+                if step.verification_criteria:
+                    plan.status = TaskStatus.VERIFYING
+                    verified, v_err = self._verify_step_outcome(step)
+                    if not verified:
+                        step.status = "failed"
+                        step.error = v_err or "Verification failed"
+                        plan.status = TaskStatus.RECOVERING
+                        self._execute_rollback(step)
+                        plan.status = TaskStatus.FAILED
+                        self.store.save_plan_data(plan.to_dict())
+                        return {
+                            "status": "failed",
+                            "plan_id": plan.plan_id,
+                            "failed_step_id": step.step_id,
+                            "error": step.error,
+                            "plan": plan.to_dict(),
+                        }
+
+                step.status = "completed"
                 completed_step_ids.add(step.step_id)
             else:
                 step.status = "failed"
@@ -361,14 +511,18 @@ class TaskPlanner:
                     step.status = "skipped"
                     step.error = "Directory does not exist yet; auto-created for project."
                     try:
-                        p_dir = os.path.expanduser(step.parameters.get("path", ""))
-                        if p_dir and p_dir.startswith(os.path.expanduser("~/")):
+                        p_dir = os.path.realpath(os.path.expanduser(step.parameters.get("path", "")))
+                        home = os.path.realpath(os.path.expanduser("~"))
+                        if p_dir.startswith(home + "/") or p_dir.startswith("/tmp/"):
                             os.makedirs(p_dir, exist_ok=True)
                     except Exception:
                         pass
                     completed_step_ids.add(step.step_id)
                 else:
+                    plan.status = TaskStatus.RECOVERING
+                    self._execute_rollback(step)
                     plan.status = TaskStatus.FAILED
+                    self.store.save_plan_data(plan.to_dict())
                     return {
                         "status": "failed",
                         "plan_id": plan.plan_id,
@@ -382,6 +536,7 @@ class TaskPlanner:
         plan.completed_at = time.time()
         plan.awaiting_step_id = None
         plan.final_summary = f"Plan '{plan.goal}' completed successfully ({len(plan.steps)} steps executed)."
+        self.store.save_plan_data(plan.to_dict())
 
         return {
             "status": "completed",
@@ -391,8 +546,19 @@ class TaskPlanner:
         }
 
     def get_plan(self, plan_id: str) -> Optional[TaskPlan]:
-        """Look up plan by ID."""
-        return self._active_plans.get(plan_id)
+        """Look up plan by ID from in-memory cache or persistent SQLite store."""
+        if plan_id in self._active_plans:
+            return self._active_plans[plan_id]
+        stored_data = self.store.get_plan_data(plan_id)
+        if stored_data:
+            plan = TaskPlan.from_dict(stored_data)
+            self._active_plans[plan_id] = plan
+            return plan
+        return None
+
+    def list_plans(self, limit: int = 20, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List historical and active plans from SQLite store."""
+        return self.store.list_plans(limit=limit, status=status)
 
 
 # Backward compatibility aliases
