@@ -37,6 +37,7 @@ class CameraManager:
         self._is_running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._frame_event = threading.Event()
 
         # Frame buffers
         self._latest_frame: Optional[np.ndarray] = None
@@ -86,6 +87,7 @@ class CameraManager:
                 return False
 
             self._is_running = True
+            self._frame_event.clear()
             self._thread = threading.Thread(target=self._capture_loop, daemon=True, name="MavenCameraWorker")
             self._thread.start()
             self._is_active = True
@@ -96,6 +98,7 @@ class CameraManager:
         with self._lock:
             self._is_running = False
             self._is_active = False
+            self._frame_event.set()
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.5)
@@ -167,6 +170,7 @@ class CameraManager:
                     self._latest_frame = frame
                     self._latest_timestamp = now
                     self._frame_count += 1
+                self._frame_event.set()
 
                 # Calculate live actual FPS
                 self._fps_counter += 1
@@ -179,11 +183,18 @@ class CameraManager:
                 self._last_error = str(e)
                 time.sleep(0.05)
 
-    def read_frame(self) -> Tuple[bool, Optional[np.ndarray], float]:
+    def read_frame(self, timeout_sec: float = 0.0) -> Tuple[bool, Optional[np.ndarray], float]:
         """
         Thread-safe retrieval of the most recent captured video frame.
+        Supports optional bounded wait if initial hardware frame is still buffering.
         Returns: (success, frame_bgr, timestamp)
         """
+        if timeout_sec > 0:
+            with self._lock:
+                needs_wait = self._is_running and self._latest_frame is None
+            if needs_wait:
+                self._frame_event.wait(timeout=timeout_sec)
+
         with self._lock:
             if not self._is_running or self._latest_frame is None:
                 return False, None, 0.0

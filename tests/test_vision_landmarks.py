@@ -102,6 +102,34 @@ class TestVisionLandmarks(unittest.TestCase):
         self.assertIn("palm_scale", d)
         self.assertIn("extended_fingers", d)
 
+    def test_mediapipe_onnx_hand_provider_and_jpeg_rendering(self):
+        import numpy as np
+        from maverick.vision.hand_tracker import (
+            HandTracker,
+            MediaPipeONNXHandProvider,
+            render_landmarks_jpeg,
+        )
+
+        provider = MediaPipeONNXHandProvider()
+        self.assertTrue(provider.is_available)
+        self.assertEqual(provider.get_name(), "mediapipe_onnx")
+
+        # Test HandTracker default resolution selects MediaPipe ONNX
+        tracker = HandTracker()
+        self.assertEqual(tracker.get_provider_name(), "mediapipe_onnx")
+
+        # Test blank frame fallback
+        blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        hands = tracker.process_frame(blank_frame)
+        self.assertIsInstance(hands, list)
+
+        # Test JPEG rendering
+        mock_hand = create_mock_hand()
+        jpeg_bytes = render_landmarks_jpeg(blank_frame, [mock_hand], gesture_name="index_pointing", fps=30.0)
+        self.assertTrue(len(jpeg_bytes) > 100)
+        # Verify valid JPEG magic header (SOI: 0xFF 0xD8)
+        self.assertEqual(jpeg_bytes[:2], b"\xff\xd8")
+
 
 if __name__ == "__main__":
     unittest.main()

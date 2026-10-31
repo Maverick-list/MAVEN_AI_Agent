@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 import math
 import os
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +21,8 @@ import cv2
 import numpy as np
 
 from maverick.vision.landmarks import HandLandmarks, LandmarkIndex, Point3D
+
+DEFAULT_VISION_MODELS_DIR = os.path.expanduser("~/.local/share/maverick/models/vision")
 
 
 class BaseHandTrackerProvider(ABC):
@@ -305,6 +308,205 @@ class MediaPipeProvider(BaseHandTrackerProvider):
         return hands
 
 
+class MediaPipeONNXHandProvider(BaseHandTrackerProvider):
+    """
+    High-fidelity neural hand tracking using MediaPipe 21-landmark ONNX models via OpenCV DNN.
+    Combines MPPalmDet (palm detector) and MPHandPose (21 3D landmarks estimator).
+    Falls back gracefully to OpenCVKinematicProvider if models are missing or no palm is detected.
+    """
+
+    def __init__(
+        self,
+        models_dir: Optional[str] = None,
+        palm_conf_threshold: float = 0.5,
+        hand_conf_threshold: float = 0.6,
+    ):
+        self.models_dir = models_dir or DEFAULT_VISION_MODELS_DIR
+        self.palm_conf_threshold = palm_conf_threshold
+        self.hand_conf_threshold = hand_conf_threshold
+        self._palmdet = None
+        self._handpose = None
+        self._kinematic_fallback = OpenCVKinematicProvider()
+        self._init_models()
+
+    def _init_models(self) -> None:
+        palm_onnx = os.path.join(self.models_dir, "palm_detection_mediapipe_2023feb.onnx")
+        hand_onnx = os.path.join(self.models_dir, "handpose_estimation_mediapipe_2023feb.onnx")
+        if not (os.path.isfile(palm_onnx) and os.path.isfile(hand_onnx)):
+            return
+
+        try:
+            if self.models_dir not in sys.path:
+                sys.path.insert(0, self.models_dir)
+            from mp_palmdet import MPPalmDet
+            from mp_handpose import MPHandPose
+
+            self._palmdet = MPPalmDet(
+                palm_onnx,
+                scoreThreshold=self.palm_conf_threshold,
+                backendId=cv2.dnn.DNN_BACKEND_OPENCV,
+                targetId=cv2.dnn.DNN_TARGET_CPU,
+            )
+            self._handpose = MPHandPose(
+                hand_onnx,
+                confThreshold=self.hand_conf_threshold,
+                backendId=cv2.dnn.DNN_BACKEND_OPENCV,
+                targetId=cv2.dnn.DNN_TARGET_CPU,
+            )
+        except Exception:
+            self._palmdet = None
+            self._handpose = None
+
+    def get_name(self) -> str:
+        return "mediapipe_onnx"
+
+    @property
+    def is_available(self) -> bool:
+        return self._palmdet is not None and self._handpose is not None
+
+    def process(self, frame_bgr: np.ndarray, max_hands: int = 2) -> List[HandLandmarks]:
+        if not self.is_available or frame_bgr is None or frame_bgr.size == 0:
+            return self._kinematic_fallback.process(frame_bgr, max_hands=max_hands)
+
+        h, w = frame_bgr.shape[:2]
+        try:
+            palms = self._palmdet.infer(frame_bgr)
+            if palms is None or len(palms) == 0:
+                return self._kinematic_fallback.process(frame_bgr, max_hands=max_hands)
+
+            detected_hands: List[HandLandmarks] = []
+            for palm in palms[:max_hands]:
+                res = self._handpose.infer(frame_bgr, palm)
+                if res is None:
+                    continue
+
+                pts_screen = res[4:67].reshape(21, 3)
+                handedness_score = float(res[130]) if len(res) > 130 else 1.0
+                handedness = "Right" if handedness_score >= 0.5 else "Left"
+                conf = float(res[131]) if len(res) > 131 else 0.92
+
+                landmarks: List[Point3D] = []
+                for pt in pts_screen:
+                    nx = float(np.clip(pt[0] / float(w), 0.0, 1.0))
+                    ny = float(np.clip(pt[1] / float(h), 0.0, 1.0))
+                    nz = float(pt[2] / float(w))
+                    landmarks.append(Point3D(nx, ny, nz))
+
+                detected_hands.append(
+                    HandLandmarks(landmarks=landmarks, handedness=handedness, confidence=conf)
+                )
+
+            if not detected_hands:
+                return self._kinematic_fallback.process(frame_bgr, max_hands=max_hands)
+
+            return detected_hands
+        except Exception:
+            return self._kinematic_fallback.process(frame_bgr, max_hands=max_hands)
+
+
+def render_landmarks_jpeg(
+    frame_bgr: np.ndarray,
+    hands: List[HandLandmarks],
+    gesture_name: str = "none",
+    fps: float = 0.0,
+    jpeg_quality: int = 80,
+) -> bytes:
+    """
+    Render skeleton wireframes, joint keypoints, and HUD metadata on frame and return JPEG bytes.
+    Keeps frame processing strictly in memory with zero disk writes.
+    """
+    if frame_bgr is None or frame_bgr.size == 0:
+        return b""
+
+    canvas = frame_bgr.copy()
+    h, w = canvas.shape[:2]
+
+    # Skeleton connections
+    connections = [
+        # Palm base to wrist
+        (LandmarkIndex.WRIST, LandmarkIndex.THUMB_CMC),
+        (LandmarkIndex.WRIST, LandmarkIndex.INDEX_FINGER_MCP),
+        (LandmarkIndex.WRIST, LandmarkIndex.PINKY_MCP),
+        (LandmarkIndex.INDEX_FINGER_MCP, LandmarkIndex.MIDDLE_FINGER_MCP),
+        (LandmarkIndex.MIDDLE_FINGER_MCP, LandmarkIndex.RING_FINGER_MCP),
+        (LandmarkIndex.RING_FINGER_MCP, LandmarkIndex.PINKY_MCP),
+        # Thumb
+        (LandmarkIndex.THUMB_CMC, LandmarkIndex.THUMB_MCP),
+        (LandmarkIndex.THUMB_MCP, LandmarkIndex.THUMB_IP),
+        (LandmarkIndex.THUMB_IP, LandmarkIndex.THUMB_TIP),
+        # Index
+        (LandmarkIndex.INDEX_FINGER_MCP, LandmarkIndex.INDEX_FINGER_PIP),
+        (LandmarkIndex.INDEX_FINGER_PIP, LandmarkIndex.INDEX_FINGER_DIP),
+        (LandmarkIndex.INDEX_FINGER_DIP, LandmarkIndex.INDEX_FINGER_TIP),
+        # Middle
+        (LandmarkIndex.MIDDLE_FINGER_MCP, LandmarkIndex.MIDDLE_FINGER_PIP),
+        (LandmarkIndex.MIDDLE_FINGER_PIP, LandmarkIndex.MIDDLE_FINGER_DIP),
+        (LandmarkIndex.MIDDLE_FINGER_DIP, LandmarkIndex.MIDDLE_FINGER_TIP),
+        # Ring
+        (LandmarkIndex.RING_FINGER_MCP, LandmarkIndex.RING_FINGER_PIP),
+        (LandmarkIndex.RING_FINGER_PIP, LandmarkIndex.RING_FINGER_DIP),
+        (LandmarkIndex.RING_FINGER_DIP, LandmarkIndex.RING_FINGER_TIP),
+        # Pinky
+        (LandmarkIndex.PINKY_MCP, LandmarkIndex.PINKY_PIP),
+        (LandmarkIndex.PINKY_PIP, LandmarkIndex.PINKY_DIP),
+        (LandmarkIndex.PINKY_DIP, LandmarkIndex.PINKY_TIP),
+    ]
+
+    for hand in hands:
+        pts = [(int(lm.x * w), int(lm.y * h)) for lm in hand.landmarks]
+
+        # Draw bones
+        for start_idx, end_idx in connections:
+            if start_idx < len(pts) and end_idx < len(pts):
+                cv2.line(canvas, pts[start_idx], pts[end_idx], (0, 255, 180), 2, cv2.LINE_AA)
+
+        # Draw joints
+        for i, pt in enumerate(pts):
+            if i == LandmarkIndex.INDEX_FINGER_TIP:
+                cv2.circle(canvas, pt, 7, (0, 0, 255), -1, cv2.LINE_AA)  # Red cursor tip
+            elif i in (
+                LandmarkIndex.THUMB_TIP,
+                LandmarkIndex.MIDDLE_FINGER_TIP,
+                LandmarkIndex.RING_FINGER_TIP,
+                LandmarkIndex.PINKY_TIP,
+            ):
+                cv2.circle(canvas, pt, 5, (255, 120, 0), -1, cv2.LINE_AA)  # Blue other tips
+            else:
+                cv2.circle(canvas, pt, 3, (0, 255, 0), -1, cv2.LINE_AA)  # Green joints
+
+        # Draw handedness label near wrist
+        wrist = pts[LandmarkIndex.WRIST]
+        lbl = f"{hand.handedness} ({int(hand.confidence * 100)}%)"
+        cv2.putText(
+            canvas,
+            lbl,
+            (max(10, wrist[0] - 40), min(h - 10, wrist[1] + 25)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+    # HUD overlay
+    hud_text = f"GESTURE: {gesture_name.upper()} | FPS: {fps:.1f} | HANDS: {len(hands)}"
+    cv2.rectangle(canvas, (10, 10), (w - 10, 42), (20, 20, 20), -1)
+    cv2.putText(
+        canvas,
+        hud_text,
+        (20, 32),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 255, 200),
+        2,
+        cv2.LINE_AA,
+    )
+
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), max(20, min(100, jpeg_quality))]
+    success, buffer = cv2.imencode(".jpg", canvas, encode_params)
+    return buffer.tobytes() if success else b""
+
+
 class HandTracker:
     """
     Unified multi-provider hand tracking and temporal state estimator.
@@ -333,7 +535,12 @@ class HandTracker:
             self.provider = self._resolve_provider(onnx_model_path)
 
     def _resolve_provider(self, onnx_model_path: Optional[str]) -> BaseHandTrackerProvider:
-        """Select best available provider: ONNX -> MediaPipe -> OpenCV Kinematic."""
+        """Select best available provider: MediaPipe ONNX -> ONNX single net -> MediaPipe -> OpenCV Kinematic."""
+        # 1. Primary Default: Real 21-landmark MediaPipe ONNX palm + handpose
+        mp_onnx = MediaPipeONNXHandProvider()
+        if mp_onnx.is_available:
+            return mp_onnx
+
         if onnx_model_path and os.path.exists(onnx_model_path):
             dnn = OpenCVDNNProvider(onnx_model_path)
             if dnn.is_available:
@@ -343,7 +550,7 @@ class HandTracker:
         if mp_prov.is_available:
             return mp_prov
 
-        # Default high-performance Kinematic provider
+        # Fallback high-performance Kinematic provider
         return OpenCVKinematicProvider()
 
     def process_frame(self, frame_bgr: np.ndarray) -> List[HandLandmarks]:

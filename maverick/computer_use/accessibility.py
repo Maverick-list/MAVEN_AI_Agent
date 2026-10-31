@@ -21,6 +21,8 @@ except Exception as _atspi_err:
     _HAS_ATSPI = False
     _ATSPI_ERR = str(_atspi_err)
 
+_GLOBAL_ATSPI_LOCK = threading.RLock()
+
 
 @dataclass
 class AccessibleElement:
@@ -100,42 +102,44 @@ class AccessibilityBridge:
         """Retrieve root desktop accessible object."""
         if not self._atspi:
             return None
-        try:
-            return self._atspi.get_desktop(0)
-        except Exception as e:
-            logger.debug(f"Failed to get desktop from AT-SPI: {e}")
-            return None
+        with _GLOBAL_ATSPI_LOCK:
+            try:
+                return self._atspi.get_desktop(0)
+            except Exception as e:
+                logger.debug(f"Failed to get desktop from AT-SPI: {e}")
+                return None
 
     def get_windows(self) -> List[AccessibleElement]:
         """List all top-level application windows currently mapped on desktop."""
         if not self._atspi:
             return []
 
-        windows: List[AccessibleElement] = []
-        desktop = self.get_desktop()
-        if not desktop:
-            return []
+        with _GLOBAL_ATSPI_LOCK:
+            windows: List[AccessibleElement] = []
+            desktop = self.get_desktop()
+            if not desktop:
+                return []
 
-        try:
-            for i in range(desktop.get_child_count()):
-                app = desktop.get_child_at_index(i)
-                if not app:
-                    continue
-                app_name = (app.get_name() or "").strip()
-                if not app_name or app_name in ("gnome-shell", "mutter-x11-frames", "gjs", "-c"):
-                    continue
-
-                for j in range(app.get_child_count()):
-                    win = app.get_child_at_index(j)
-                    if not win:
+            try:
+                for i in range(desktop.get_child_count()):
+                    app = desktop.get_child_at_index(i)
+                    if not app:
                         continue
-                    elem = self._node_to_element(win, app_name=app_name, window_title=win.get_name() or "")
-                    if elem and elem.name.strip() and elem.width > 0 and elem.height > 0:
-                        windows.append(elem)
-        except Exception as e:
-            logger.debug(f"Error enumerating windows: {e}")
+                    app_name = (app.get_name() or "").strip()
+                    if not app_name or app_name in ("gnome-shell", "mutter-x11-frames", "gjs", "-c"):
+                        continue
 
-        return windows
+                    for j in range(app.get_child_count()):
+                        win = app.get_child_at_index(j)
+                        if not win:
+                            continue
+                        elem = self._node_to_element(win, app_name=app_name, window_title=win.get_name() or "")
+                        if elem and elem.name.strip() and elem.width > 0 and elem.height > 0:
+                            windows.append(elem)
+            except Exception as e:
+                logger.debug(f"Error enumerating windows: {e}")
+
+            return windows
 
     def get_active_window(self) -> Optional[AccessibleElement]:
         """Find the currently focused or active top-level application window."""
@@ -170,51 +174,52 @@ class AccessibilityBridge:
         if not self._atspi:
             return []
 
-        results: List[AccessibleElement] = []
-        desktop = self.get_desktop()
-        if not desktop:
-            return []
+        with _GLOBAL_ATSPI_LOCK:
+            results: List[AccessibleElement] = []
+            desktop = self.get_desktop()
+            if not desktop:
+                return []
 
-        q = query.lower().strip() if query else None
-        target_role = role.lower().strip() if role else None
+            q = query.lower().strip() if query else None
+            target_role = role.lower().strip() if role else None
 
-        for app_idx in range(desktop.get_child_count()):
-            if len(results) >= max_results:
-                break
-            try:
-                app = desktop.get_child_at_index(app_idx)
-                if not app:
-                    continue
-                cur_app = (app.get_name() or "").strip()
-                if app_name and app_name.lower() not in cur_app.lower():
-                    continue
-
-                for win_idx in range(app.get_child_count()):
-                    if len(results) >= max_results:
-                        break
-                    win = app.get_child_at_index(win_idx)
-                    if not win:
+            for app_idx in range(desktop.get_child_count()):
+                if len(results) >= max_results:
+                    break
+                try:
+                    app = desktop.get_child_at_index(app_idx)
+                    if not app:
                         continue
-                    cur_win = (win.get_name() or "").strip()
-                    if window_title and window_title.lower() not in cur_win.lower():
+                    cur_app = (app.get_name() or "").strip()
+                    if app_name and app_name.lower() not in cur_app.lower():
                         continue
 
-                    self._search_accessible_tree(
-                        node=win,
-                        query=q,
-                        target_role=target_role,
-                        app_name=cur_app,
-                        window_title=cur_win,
-                        interactive_only=interactive_only,
-                        results=results,
-                        max_results=max_results,
-                        depth=0,
-                        max_depth=16,
-                    )
-            except Exception:
-                continue
+                    for win_idx in range(app.get_child_count()):
+                        if len(results) >= max_results:
+                            break
+                        win = app.get_child_at_index(win_idx)
+                        if not win:
+                            continue
+                        cur_win = (win.get_name() or "").strip()
+                        if window_title and window_title.lower() not in cur_win.lower():
+                            continue
 
-        return results
+                        self._search_accessible_tree(
+                            node=win,
+                            query=q,
+                            target_role=target_role,
+                            app_name=cur_app,
+                            window_title=cur_win,
+                            interactive_only=interactive_only,
+                            results=results,
+                            max_results=max_results,
+                            depth=0,
+                            max_depth=16,
+                        )
+                except Exception:
+                    continue
+
+            return results
 
     def _search_accessible_tree(
         self,
@@ -369,16 +374,17 @@ class AccessibilityBridge:
         if not element.node_ref:
             return False
 
-        try:
-            act = element.node_ref.get_action_iface()
-            if act and act.get_n_actions() > action_index:
-                ok = act.do_action(action_index)
-                if ok:
-                    return True
-        except Exception as e:
-            logger.debug(f"Direct accessibility action failed on '{element.name}': {e}")
+        with _GLOBAL_ATSPI_LOCK:
+            try:
+                act = element.node_ref.get_action_iface()
+                if act and act.get_n_actions() > action_index:
+                    ok = act.do_action(action_index)
+                    if ok:
+                        return True
+            except Exception as e:
+                logger.debug(f"Direct accessibility action failed on '{element.name}': {e}")
 
-        return False
+            return False
 
     def set_element_text(self, element: AccessibleElement, text: str) -> bool:
         """
@@ -387,56 +393,58 @@ class AccessibilityBridge:
         if not element.node_ref:
             return False
 
-        try:
-            edit = element.node_ref.get_editable_text_iface()
-            if edit:
-                return bool(edit.set_text_contents(text))
-        except Exception as e:
-            logger.debug(f"Direct editable text setting failed on '{element.name}': {e}")
+        with _GLOBAL_ATSPI_LOCK:
+            try:
+                edit = element.node_ref.get_editable_text_iface()
+                if edit:
+                    return bool(edit.set_text_contents(text))
+            except Exception as e:
+                logger.debug(f"Direct editable text setting failed on '{element.name}': {e}")
 
-        return False
+            return False
 
     def get_application_hierarchy(self, app_name: str, max_depth: int = 3) -> Dict[str, Any]:
         """Build structured semantic hierarchy tree of an application."""
         if not self._atspi:
             return {"status": "unavailable", "app_name": app_name, "children": []}
 
-        desktop = self.get_desktop()
-        if not desktop:
-            return {"status": "error", "message": "Desktop unavailable"}
+        with _GLOBAL_ATSPI_LOCK:
+            desktop = self.get_desktop()
+            if not desktop:
+                return {"status": "error", "message": "Desktop unavailable"}
 
-        target_app = None
-        for i in range(desktop.get_child_count()):
-            app = desktop.get_child_at_index(i)
-            if app and app_name.lower() in (app.get_name() or "").lower():
-                target_app = app
-                break
+            target_app = None
+            for i in range(desktop.get_child_count()):
+                app = desktop.get_child_at_index(i)
+                if app and app_name.lower() in (app.get_name() or "").lower():
+                    target_app = app
+                    break
 
-        if not target_app:
-            return {"status": "not_found", "app_name": app_name}
+            if not target_app:
+                return {"status": "not_found", "app_name": app_name}
 
-        def _walk(node, depth):
-            if depth > max_depth or not node:
-                return None
-            try:
-                name = node.get_name() or ""
-                role = node.get_role_name() or ""
-                children = []
-                for idx in range(min(15, node.get_child_count())):
-                    ch = node.get_child_at_index(idx)
-                    ch_dict = _walk(ch, depth + 1)
-                    if ch_dict:
-                        children.append(ch_dict)
-                return {
-                    "name": name,
-                    "role": role,
-                    "children": children,
-                }
-            except Exception:
-                return None
+            def _walk(node, depth):
+                if depth > max_depth or not node:
+                    return None
+                try:
+                    name = node.get_name() or ""
+                    role = node.get_role_name() or ""
+                    children = []
+                    for idx in range(min(15, node.get_child_count())):
+                        ch = node.get_child_at_index(idx)
+                        ch_dict = _walk(ch, depth + 1)
+                        if ch_dict:
+                            children.append(ch_dict)
+                    return {
+                        "name": name,
+                        "role": role,
+                        "children": children,
+                    }
+                except Exception:
+                    return None
 
-        return {
-            "status": "success",
-            "app_name": target_app.get_name(),
-            "tree": _walk(target_app, 0),
-        }
+            return {
+                "status": "success",
+                "app_name": target_app.get_name(),
+                "tree": _walk(target_app, 0),
+            }

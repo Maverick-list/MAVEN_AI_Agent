@@ -159,6 +159,44 @@ class TestMultimodalVision(unittest.TestCase):
         res = self.vc.handle_multimodal_command("how is the weather in Tokyo?")
         self.assertIsNone(res)
 
+    def test_gesture_engine_hand_lost_and_drag_release(self):
+        from maverick.vision.gesture_engine import GestureEngine
+        from maverick.vision.gesture_recognition import GestureType
+        from tests.test_vision_landmarks import create_mock_hand
+
+        mock_mouse = MagicMock()
+        mock_mouse.enabled = True
+        engine = GestureEngine(mouse=mock_mouse)
+
+        hand = create_mock_hand()
+
+        # 1. Sustained pinch triggers drag hold after 4 frames
+        for _ in range(4):
+            engine._dispatch_gesture(GestureType.INDEX_PINCH, [hand], velocity=(0.0, 0.0))
+        mock_mouse.press_and_hold.assert_called_with(MouseButton.LEFT)
+
+        # 2. Hand lost -> releases hold immediately
+        engine._dispatch_gesture(GestureType.NONE, [], velocity=(0.0, 0.0))
+        mock_mouse.release_hold.assert_any_call(MouseButton.LEFT)
+        mock_mouse.release_hold.assert_any_call(MouseButton.RIGHT)
+
+        # 3. Two fingers pointing stationary -> right click
+        mock_mouse.reset_mock()
+        engine._dispatch_gesture(GestureType.TWO_FINGERS_POINTING, [hand], velocity=(0.0, 0.02))
+        mock_mouse.click.assert_called_with(MouseButton.RIGHT)
+
+        # 4. Closed fist -> emergency stop
+        mock_mouse.reset_mock()
+        engine._dispatch_gesture(GestureType.CLOSED_FIST, [hand], velocity=(0.0, 0.0))
+        mock_mouse.emergency_stop.assert_called_once()
+        self.assertTrue(engine._emergency_stop_triggered)
+
+        # 5. Open palm -> resumes and releases holds
+        mock_mouse.reset_mock()
+        engine._dispatch_gesture(GestureType.OPEN_PALM, [hand], velocity=(0.0, 0.0))
+        self.assertFalse(engine._emergency_stop_triggered)
+        mock_mouse.release_hold.assert_any_call(MouseButton.LEFT)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,20 +131,37 @@ class GestureEngine:
         velocity: Tuple[float, float],
     ) -> None:
         """Execute desktop actions based on classified gesture."""
-        if not hands or not self.mouse.enabled:
+        # Hand lost: release all held buttons immediately to avoid stuck dragging
+        if not hands:
+            if self._pinch_hold_count >= 4:
+                self.mouse.release_hold(MouseButton.LEFT)
+            self._pinch_hold_count = 0
+            self.mouse.release_hold(MouseButton.LEFT)
+            self.mouse.release_hold(MouseButton.RIGHT)
+            return
+
+        if not self.mouse.enabled:
             return
 
         primary = hands[0]
 
-        # 1. Closed fist: EMERGENCY STOP
+        # 1. Closed fist: EMERGENCY STOP / PAUSE
         if gesture == GestureType.CLOSED_FIST:
+            if self._pinch_hold_count >= 4:
+                self.mouse.release_hold(MouseButton.LEFT)
+            self.mouse.release_hold(MouseButton.LEFT)
+            self.mouse.release_hold(MouseButton.RIGHT)
             self.mouse.emergency_stop()
             self._emergency_stop_triggered = True
             self._pinch_hold_count = 0
             return
 
-        # 2. Open palm: release click-and-hold (drop)
+        # 2. Open palm: resume control & release any held buttons
         if gesture == GestureType.OPEN_PALM:
+            self._emergency_stop_triggered = False
+            self.mouse.enabled = True
+            if self._pinch_hold_count >= 4:
+                self.mouse.release_hold(MouseButton.LEFT)
             self.mouse.release_hold(MouseButton.LEFT)
             self.mouse.release_hold(MouseButton.RIGHT)
             self._pinch_hold_count = 0
@@ -165,8 +182,14 @@ class GestureEngine:
             if self._pinch_hold_count >= 4:
                 # Sustained pinch: engage drag-and-drop hold
                 self.mouse.press_and_hold(MouseButton.LEFT)
+        else:
+            # Release drag-and-drop hold when pinch is released
+            if self._pinch_hold_count >= 4:
+                self.mouse.release_hold(MouseButton.LEFT)
+            if gesture != GestureType.INDEX_POINTING:
+                self._pinch_hold_count = 0
 
-        elif gesture == GestureType.DOUBLE_PINCH:
+        if gesture == GestureType.DOUBLE_PINCH:
             self._pinch_hold_count = 0
             self.mouse.double_click()
 
@@ -174,13 +197,15 @@ class GestureEngine:
             self._pinch_hold_count = 0
             self.mouse.click(MouseButton.RIGHT)
 
-        # 5. Scroll mode (Two fingers pointing)
+        # 5. Two fingers pointing: Right-click if stationary, vertical scroll if moving
         elif gesture == GestureType.TWO_FINGERS_POINTING:
             self._pinch_hold_count = 0
             vy = velocity[1]
             if abs(vy) > 0.08:
                 delta = int(round(-vy * 12))
                 self.mouse.scroll(delta)
+            else:
+                self.mouse.click(MouseButton.RIGHT)
 
         elif gesture == GestureType.SWIPE_UP:
             self._pinch_hold_count = 0
@@ -189,10 +214,6 @@ class GestureEngine:
         elif gesture == GestureType.SWIPE_DOWN:
             self._pinch_hold_count = 0
             self.mouse.scroll(-4)
-
-        else:
-            if gesture != GestureType.INDEX_POINTING:
-                self._pinch_hold_count = 0
 
     def get_telemetry(self) -> Dict[str, Any]:
         """Telemetry snapshot for Control Center HUD."""
