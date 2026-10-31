@@ -917,8 +917,17 @@
     const handLabel = document.getElementById("vision-hand-label");
 
     // Top Navigation Interaction Mode Pill
+    const opMode = (snap?.system?.operating_mode || "normal").toLowerCase();
+    const modeSelectEl = document.getElementById("select-operating-mode");
+    if (modeSelectEl && document.activeElement !== modeSelectEl) {
+      modeSelectEl.value = opMode;
+    }
+
     if (pillInteractionMode) {
-      if (imode === "vision_active") {
+      if (opMode && opMode !== "normal" && opMode !== "vision") {
+        pillInteractionMode.textContent = `MODE: ${opMode.toUpperCase()}`;
+        pillInteractionMode.className = "mini-pill ok";
+      } else if (imode === "vision_active") {
         pillInteractionMode.textContent = "MODE: VISION CONTROL";
         pillInteractionMode.className = "mini-pill ok";
       } else if (imode === "vision_starting") {
@@ -1078,6 +1087,26 @@
   document.getElementById("btn-vision-estop")?.addEventListener("click", triggerEmergencyStop);
   document.getElementById("btn-toggle-vision-mode")?.addEventListener("click", triggerToggleVisionMode);
   document.getElementById("btn-top-toggle-mode")?.addEventListener("click", triggerToggleVisionMode);
+
+  const modeSelect = document.getElementById("select-operating-mode");
+  if (modeSelect) {
+    modeSelect.addEventListener("change", async (e) => {
+      const targetMode = e.target.value;
+      try {
+        showToast(`Switching operating mode to ${targetMode.toUpperCase()}...`);
+        const res = await apiPost("/api/system/mode", { mode: targetMode });
+        if (res.status === "success") {
+          showToast(`Operating Mode: ${targetMode.toUpperCase()} active`);
+          const pill = document.getElementById("pill-interaction-mode");
+          if (pill) pill.textContent = `MODE: ${targetMode.toUpperCase()}`;
+        } else {
+          showToast(`Error: ${res.message || "Failed to set mode"}`);
+        }
+      } catch (err) {
+        showToast(`Mode switch failed: ${err.message}`);
+      }
+    });
+  }
 
   document.getElementById("btn-toggle-vision")?.addEventListener("click", async () => {
     const curMode = state.lastSnapshot?.vision?.mode || "privacy_mode";

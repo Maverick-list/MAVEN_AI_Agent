@@ -607,6 +607,8 @@ class TelemetryHub:
             "system": {
                 "os": self._cached_os_info,
                 "profile": profile,
+                "operating_mode": self.memory_manager.current_mode.value,
+                "memory_manager": self.memory_manager.get_system_memory_status(),
                 "cpu": {
                     "usage_percent": cpu_total,
                     "cores_logical": len(cpu_per_core) or psutil.cpu_count(logical=True) or 1,

@@ -186,7 +186,7 @@ class MemoryManager:
         with self._lock:
             self._mode_change_hooks.append(hook)
 
-    def set_mode(self, target_mode: MavenOperatingMode) -> Dict[str, Any]:
+    def set_mode(self, target_mode: MavenOperatingMode, stop_browser: bool = False) -> Dict[str, Any]:
         """
         Transition Maven into one of the 6 Operating Modes.
         Enforces memory conservation and hardware lifecycle rules.
@@ -236,15 +236,16 @@ class MemoryManager:
                     tts_prov.close()
                     actions_taken.append("tts_worker_reclaimed")
 
-                # Reclaim Chrome automation session if running
-                try:
-                    from maverick.browser.lifecycle import BrowserLifecycle
-                    bl = BrowserLifecycle()
-                    if bl.is_running():
-                        bl.stop()
-                        actions_taken.append("browser_cdp_stopped")
-                except Exception:
-                    pass
+                # Reclaim Chrome automation session if requested
+                if stop_browser:
+                    try:
+                        from maverick.browser.lifecycle import BrowserLifecycle
+                        bl = BrowserLifecycle()
+                        if bl.is_running():
+                            bl.stop()
+                            actions_taken.append("browser_cdp_stopped")
+                    except Exception:
+                        pass
 
                 # Run Python garbage collector
                 gc.collect()

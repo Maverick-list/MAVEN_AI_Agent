@@ -41,6 +41,14 @@
     <div class="dual-wake-cluster">
       <span class="mini-pill ok" id="pill-wake-word">WAKE: ARMED</span>
       <span class="mini-pill ok" id="pill-dual-clap">CLAP: ARMED</span>
+      <select id="select-operating-mode" class="mini-pill" style="cursor: pointer; background: rgba(0, 30, 45, 0.85); color: #00f0ff; border: 1px solid rgba(0, 240, 255, 0.4); font-family: inherit; font-size: 11px; padding: 2px 6px; border-radius: 4px; text-transform: uppercase;" title="Select Maven Operating Mode">
+        <option value="normal">MODE: NORMAL</option>
+        <option value="voice">MODE: VOICE</option>
+        <option value="vision">MODE: VISION</option>
+        <option value="full_assistant">MODE: FULL ASSISTANT</option>
+        <option value="low_memory">MODE: LOW MEMORY</option>
+        <option value="safe_idle">MODE: SAFE IDLE</option>
+      </select>
       <span class="mini-pill ok" id="pill-interaction-mode">MODE: NORMAL</span>
       <span class="mini-pill ok" id="pill-physical-status" title="Physical mouse and keyboard unrestricted">PHYSICAL: ACTIVE</span>
       <button type="button" class="mini-pill mute-toggle" id="btn-top-toggle-mode" style="cursor: pointer;" title="Toggle Vision Control Mode (Super+Shift+V)">⇄ MODE</button>
