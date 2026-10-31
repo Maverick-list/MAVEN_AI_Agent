@@ -1,0 +1,184 @@
+{
+  "normal": {
+    "mode": "normal",
+    "switch_status": "success",
+    "switch_actions": [
+      "vision_deactivated_and_camera_stopped",
+      "onnx_vision_models_unloaded"
+    ],
+    "camera_hardware_active": false,
+    "dashboard_metrics": {
+      "pid": 82642,
+      "rss_mb": 541.7,
+      "pss_mb": 519.56,
+      "uss_mb": 507.25,
+      "vmsize_mb": 1909.19,
+      "vmpeak_mb": 1921.39,
+      "vmhwm_mb": 567.77,
+      "threads": 17,
+      "fds": 92,
+      "name": "python3"
+    },
+    "system_ram": {
+      "total_mb": 14670.12,
+      "available_mb": 4801.95,
+      "used_mb": 9868.17,
+      "percent": 67.3,
+      "swap_total_mb": 0.0,
+      "swap_used_mb": 0.0,
+      "swap_percent": 0.0
+    }
+  },
+  "voice": {
+    "mode": "voice",
+    "switch_status": "success",
+    "switch_actions": [
+      "vision_deactivated_and_camera_stopped",
+      "onnx_vision_models_unloaded"
+    ],
+    "camera_hardware_active": false,
+    "dashboard_metrics": {
+      "pid": 82642,
+      "rss_mb": 548.01,
+      "pss_mb": 525.87,
+      "uss_mb": 513.56,
+      "vmsize_mb": 1887.05,
+      "vmpeak_mb": 1887.09,
+      "vmhwm_mb": 548.01,
+      "threads": 16,
+      "fds": 92,
+      "name": "python3"
+    },
+    "system_ram": {
+      "total_mb": 14670.12,
+      "available_mb": 4756.16,
+      "used_mb": 9913.96,
+      "percent": 67.6,
+      "swap_total_mb": 0.0,
+      "swap_used_mb": 0.0,
+      "swap_percent": 0.0
+    }
+  },
+  "vision": {
+    "mode": "vision",
+    "switch_status": "success",
+    "switch_actions": [
+      "vision_activated: success"
+    ],
+    "camera_hardware_active": true,
+    "dashboard_metrics": {
+      "pid": 82642,
+      "rss_mb": 573.59,
+      "pss_mb": 551.45,
+      "uss_mb": 539.14,
+      "vmsize_mb": 1921.36,
+      "vmpeak_mb": 1921.36,
+      "vmhwm_mb": 573.59,
+      "threads": 19,
+      "fds": 93,
+      "name": "python3"
+    },
+    "system_ram": {
+      "total_mb": 14670.12,
+      "available_mb": 4768.62,
+      "used_mb": 9901.5,
+      "percent": 67.5,
+      "swap_total_mb": 0.0,
+      "swap_used_mb": 0.0,
+      "swap_percent": 0.0
+    }
+  },
+  "full_assistant": {
+    "mode": "full_assistant",
+    "switch_status": "success",
+    "switch_actions": [
+      "full_vision_activated"
+    ],
+    "camera_hardware_active": true,
+    "dashboard_metrics": {
+      "pid": 82642,
+      "rss_mb": 573.61,
+      "pss_mb": 551.47,
+      "uss_mb": 539.16,
+      "vmsize_mb": 1921.36,
+      "vmpeak_mb": 1921.39,
+      "vmhwm_mb": 573.61,
+      "threads": 19,
+      "fds": 93,
+      "name": "python3"
+    },
+    "system_ram": {
+      "total_mb": 14670.12,
+      "available_mb": 4733.0,
+      "used_mb": 9937.12,
+      "percent": 67.7,
+      "swap_total_mb": 0.0,
+      "swap_used_mb": 0.0,
+      "swap_percent": 0.0
+    }
+  },
+  "low_memory": {
+    "mode": "low_memory",
+    "switch_status": "success",
+    "switch_actions": [
+      "vision_deactivated_and_camera_stopped",
+      "onnx_vision_models_unloaded",
+      "tts_worker_reclaimed",
+      "garbage_collection_executed",
+      "heap_trim_executed"
+    ],
+    "camera_hardware_active": false,
+    "dashboard_metrics": {
+      "pid": 82642,
+      "rss_mb": 541.62,
+      "pss_mb": 519.49,
+      "uss_mb": 507.18,
+      "vmsize_mb": 1909.52,
+      "vmpeak_mb": 1921.39,
+      "vmhwm_mb": 567.77,
+      "threads": 17,
+      "fds": 92,
+      "name": "python3"
+    },
+    "system_ram": {
+      "total_mb": 14670.12,
+      "available_mb": 4792.07,
+      "used_mb": 9878.06,
+      "percent": 67.3,
+      "swap_total_mb": 0.0,
+      "swap_used_mb": 0.0,
+      "swap_percent": 0.0
+    }
+  },
+  "safe_idle": {
+    "mode": "safe_idle",
+    "switch_status": "success",
+    "switch_actions": [
+      "vision_deactivated_and_camera_stopped",
+      "onnx_vision_models_unloaded",
+      "tts_worker_reclaimed"
+    ],
+    "camera_hardware_active": false,
+    "dashboard_metrics": {
+      "pid": 82642,
+      "rss_mb": 541.52,
+      "pss_mb": 519.38,
+      "uss_mb": 507.07,
+      "vmsize_mb": 1909.19,
+      "vmpeak_mb": 1921.39,
+      "vmhwm_mb": 567.77,
+      "threads": 17,
+      "fds": 92,
+      "name": "python3"
+    },
+    "system_ram": {
+      "total_mb": 14670.12,
+      "available_mb": 4813.81,
+      "used_mb": 9856.32,
+      "percent": 67.2,
+      "swap_total_mb": 0.0,
+      "swap_used_mb": 0.0,
+      "swap_percent": 0.0
+    }
+  }
+}

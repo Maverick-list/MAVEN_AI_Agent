@@ -1,0 +1,53 @@
+[
+  {
+    "event_id": "EVT-SIGKILL-137",
+    "signature": "Command exited with code 137 (SIGKILL)",
+    "occurrences": [
+      "task-10831 cancellation during daemon reload",
+      "task-11150 cancellation during debug run",
+      "task-11185 cancellation during deadlock debug",
+      "task-11307 cancellation during configuration reload",
+      "task-11358 termination via fuser -k 18766/tcp"
+    ],
+    "suspected_cause": "Linux Kernel OOM Killer vs Process Manager SIGKILL",
+    "kernel_dmesg_verdict": "Zero kernel OOM events (no oom-killer or oom_reaper calls found in dmesg/journalctl)",
+    "root_cause_classification": "Manual Cancellation / Task Manager SIGKILL",
+    "status": "RESOLVED - Expected lifecycle management behavior when restarting daemon processes."
+  },
+  {
+    "event_id": "EVT-TIMEOUT-TTS",
+    "signature": "TimeoutError: timed out in test_dashboard_live_endpoints_and_all_visual_states (/api/voice/test)",
+    "occurrences": [
+      "task-11120 in test_control_center_and_elevenlabs.py line 310"
+    ],
+    "suspected_cause": "Network / Rate Limit vs Mutex Deadlock",
+    "root_cause_classification": "Application Bug (Non-reentrant Mutex Self-Deadlock)",
+    "detailed_findings": "LocalNeuralTTSProvider._arm_idle_timer() attempted to acquire self._worker_lock while synthesize_to_wav() already held it. Because self._worker_lock was a non-reentrant threading.Lock(), the synthesis thread entered permanent futex_do_wait deadlock, causing HTTP requests to exceed client timeout.",
+    "remediation": "Converted self._worker_lock and self._lock to threading.RLock(). Bounded PyTorch worker threads.",
+    "verification_status": "VERIFIED FIXED - test_control_center_and_elevenlabs.py re-run; all 7 tests passed in 18.05s."
+  },
+  {
+    "event_id": "EVT-ASSERT-MODE",
+    "signature": "AssertionError: 'garbage_collection_executed' not found in actions",
+    "occurrences": [
+      "task-11120 in test_memory_and_modes.py line 51"
+    ],
+    "suspected_cause": "Action string regression",
+    "root_cause_classification": "Application Bug (Metadata Action String Regression)",
+    "detailed_findings": "Action string was changed to 'garbage_collection_and_heap_trim_executed', breaking exact string assertion.",
+    "remediation": "Updated memory_manager.py to preserve 'garbage_collection_executed' and add 'heap_trim_executed'.",
+    "verification_status": "VERIFIED FIXED - test_memory_and_modes.py re-run; all 8 tests passed in 0.668s."
+  },
+  {
+    "event_id": "EVT-TIMEOUT-CONCURRENT-PROFILE",
+    "signature": "TimeoutError: timed out during sustained concurrent stress test (/api/system/memory-profile)",
+    "occurrences": [
+      "task-11322 in test_sustained_reliability.py (21 requests out of 300 timed out at 5.0s)"
+    ],
+    "suspected_cause": "CPU thread starvation vs /proc smaps kernel lock contention",
+    "root_cause_classification": "Kernel /proc lock contention under unbounded concurrency",
+    "detailed_findings": "8 concurrent threads simultaneously queried /proc/[pid]/smaps_rollup across all system processes. Linux kernel serializes /proc/smaps reads per mm_struct, causing individual reads to queue up to 5s.",
+    "remediation": "Implemented 1.0s telemetry snapshot cache in MemoryManager.profile_all_subsystems().",
+    "verification_status": "VERIFIED FIXED - P50 latency dropped from 88ms to 21ms; zero thread accumulation."
+  }
+]

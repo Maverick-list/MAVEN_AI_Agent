@@ -1,0 +1,41 @@
+{
+  "pre_cleanup_status": {
+    "status_code": 200,
+    "latency_ms": 10.64,
+    "mode": null,
+    "ai_gateway_ready": false
+  },
+  "cleanup_execution": {
+    "status_code": 200,
+    "latency_ms": 339.99,
+    "response": {
+      "status": "success",
+      "pressure": "healthy",
+      "available_gb": 4.48,
+      "actions_executed": [
+        "unloaded_vision_models",
+        "closed_idle_tts_worker",
+        "gc_freed_0_objects_and_heap_trimmed"
+      ]
+    },
+    "actions": [
+      "unloaded_vision_models",
+      "closed_idle_tts_worker",
+      "gc_freed_0_objects_and_heap_trimmed"
+    ]
+  },
+  "post_cleanup_status": {
+    "status_code": 200,
+    "latency_ms": 7.63,
+    "services_intact": true
+  },
+  "post_cleanup_inference": {
+    "status_code": 200,
+    "latency_ms": 3944.8,
+    "inference_successful": true,
+    "engine_used": "local_neural"
+  },
+  "post_cleanup_camera": {
+    "camera_descriptor_valid": true
+  }
+}

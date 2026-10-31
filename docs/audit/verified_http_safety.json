@@ -1,0 +1,23 @@
+{
+  "bounded_workers": {
+    "max_observed_workers": 9,
+    "bounded_strictly": true,
+    "all_succeeded": true
+  },
+  "socket_timeout": {
+    "socket_auto_closed": true,
+    "timeout_elapsed_sec": 5.01
+  },
+  "error_handling": {
+    "status_404_verified": true,
+    "status_403_origin_verified": true
+  },
+  "connection_close": {
+    "connection_close_present": true
+  },
+  "sse_lifecycle": {
+    "sse_content_type": "text/event-stream; charset=utf-8",
+    "telemetry_received": true,
+    "post_disconnect_healthy": true
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "step1_initial_idle": {
+    "active_workers": [],
+    "verified_idle": true
+  },
+  "step2_cold_start": {
+    "success": true,
+    "wall_time_sec": 3.118,
+    "ttfb_ms": 115.9,
+    "worker_pid": 88479,
+    "worker_rss_mb": 873.19,
+    "single_worker_active": true
+  },
+  "step3_warm_reuse": {
+    "success": true,
+    "wall_time_sec": 1.059,
+    "ttfb_ms": 107.3,
+    "same_worker_reused": true,
+    "duplicate_workers": false
+  },
+  "step4_idle_timeout": {
+    "worker_terminated": true,
+    "memory_reclaimed": true
+  },
+  "step5_worker_restart": {
+    "success": true,
+    "new_worker_spawned": true,
+    "worker_rss_mb": 873.33
+  },
+  "step6_low_memory_mode": {
+    "worker_evicted": true
+  },
+  "step7_safe_idle_mode": {
+    "worker_evicted": true
+  },
+  "step8_orphan_check": {
+    "final_worker_count": 0,
+    "zero_orphans": true,
+    "deadlocks_detected": false
+  }
+}
