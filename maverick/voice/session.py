@@ -137,11 +137,22 @@ class VoiceSession:
             time.sleep(0.05)
             return None
 
-        # Feedback loop prevention: if Maven is speaking, do not process microphone input
-        if self.config.feedback_prevention and self.tts.is_speaking():
+        # Feedback loop prevention with intelligent barge-in monitoring
+        if self.tts.is_speaking():
             if self._state != VoiceState.SPEAKING:
                 self._transition_to(VoiceState.SPEAKING)
-            time.sleep(0.05)
+
+            # Barge-in detection: inspect incoming microphone audio for user speech bursts
+            chunk = self.audio.read_chunk()
+            if chunk:
+                rms = calculate_rms(chunk)
+                noise_floor = getattr(self.wake_detector, "_noise_floor", 0.05) or 0.05
+                # Distinct acoustic onset during playback interrupts assistant speech immediately
+                if rms > max(0.22, noise_floor * 3.8):
+                    voice_logger.tts_interrupted()
+                    self.interrupt()
+                    return None
+            time.sleep(0.04)
             return None
         elif self._state == VoiceState.SPEAKING and not self.tts.is_speaking():
             self.rearm()
