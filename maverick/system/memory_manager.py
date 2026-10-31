@@ -197,6 +197,7 @@ class MemoryManager:
                 return {
                     "status": "success",
                     "mode": target_mode.value,
+                    "current_mode": target_mode.value,
                     "previous_mode": prev_mode.value,
                     "changed": False,
                     "message": f"Already operating in {target_mode.value.upper()} Mode.",
@@ -272,6 +273,7 @@ class MemoryManager:
             return {
                 "status": "success",
                 "mode": target_mode.value,
+                "current_mode": target_mode.value,
                 "previous_mode": prev_mode.value,
                 "changed": True,
                 "actions": actions_taken,
@@ -385,6 +387,7 @@ class MemoryManager:
         total_maven_pss = sum(s.get("pss_mb", 0.0) for s in subsystems if "pss_mb" in s)
 
         return {
+            "status": "success",
             "subsystems": subsystems,
             "total_maven_rss_mb": round(total_maven_rss, 2),
             "total_maven_pss_mb": round(total_maven_pss, 2),
@@ -422,6 +425,7 @@ class MemoryManager:
             actions.append(f"gc_freed_{freed_objs}_objects")
 
         return {
+            "status": "success",
             "pressure": pressure,
             "available_gb": status["available_gb"],
             "actions_executed": actions,

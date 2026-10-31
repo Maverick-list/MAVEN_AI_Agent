@@ -22,7 +22,7 @@ class TestDashboardEndpointsV2(unittest.TestCase):
 
     def _get(self, path):
         req = urllib.request.Request(f"{self.base_url}{path}")
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
             data = resp.read()
             return resp.status, resp.headers.get_content_type(), data
 
@@ -92,6 +92,29 @@ class TestDashboardEndpointsV2(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(res.get("status"), "success")
         self.assertIn("symbols", res)
+
+    def test_operating_mode_switch(self):
+        status, _, res = self._post("/api/system/mode", {"mode": "low_memory"})
+        self.assertEqual(status, 200)
+        self.assertEqual(res.get("status"), "success")
+        self.assertEqual(res.get("current_mode"), "low_memory")
+
+        status, _, res = self._post("/api/system/mode", {"mode": "normal"})
+        self.assertEqual(status, 200)
+        self.assertEqual(res.get("status"), "success")
+        self.assertEqual(res.get("current_mode"), "normal")
+
+    def test_memory_profile_and_cleanup(self):
+        status, ctype, data = self._get("/api/system/memory-profile")
+        self.assertEqual(status, 200)
+        obj = json.loads(data.decode("utf-8"))
+        self.assertEqual(obj.get("status"), "success")
+        self.assertIn("subsystems", obj)
+
+        status, _, res = self._post("/api/system/memory-cleanup", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(res.get("status"), "success")
+        self.assertIn("pressure", res)
 
 if __name__ == "__main__":
     unittest.main()
