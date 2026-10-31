@@ -222,6 +222,11 @@ class TelemetryHub:
         self.vision_controller: VisionController = self.controller.vision or VisionController()
         from maverick.computer_use.agent import AutonomousComputerUseAgent
         self.computer_use_agent = getattr(self.planner.tools, "_cu_agent", None) or AutonomousComputerUseAgent()
+        from maverick.system.memory_manager import memory_manager
+        self.memory_manager = memory_manager
+        self.memory_manager.register_component("vision_controller", self.vision_controller)
+        self.memory_manager.register_component("tts_provider", getattr(self.tts, "local_neural", None) or self.tts)
+        self.memory_manager.register_component("computer_use", self.computer_use_agent)
         self._daemon_last_trigger: str = "wake_word"
 
         self._lock = threading.Lock()
@@ -1187,6 +1192,48 @@ class TelemetryHub:
             "computer_use": cu_res,
         }
 
+    def get_operating_mode(self) -> Dict[str, Any]:
+        """Return current operating mode and metadata across all 6 modes."""
+        status = self.memory_manager.get_system_memory_status()
+        modes_desc = {
+            "normal": "Normal Mode: Core assistant, background monitoring, camera OFF, vision models unloaded.",
+            "voice": "Voice Mode: Wake-word, Whisper STT, Pocket TTS active. Camera OFF.",
+            "vision": "Vision Mode: Webcam active, MediaPipe ONNX 21-landmark tracking, gesture controls.",
+            "full_assistant": "Full Assistant Mode: Voice, vision, computer use, and autonomous planner all enabled.",
+            "low_memory": "Low Memory Mode: Minimal RAM footprint, bounded queues, aggressive garbage collection.",
+            "safe_idle": "Safe Idle Mode: Standby mode, sensors paused, audio stream closed, models hibernated.",
+        }
+        return {
+            "status": "success",
+            "active_mode": self.memory_manager.current_mode.value,
+            "description": modes_desc.get(self.memory_manager.current_mode.value, ""),
+            "all_modes": list(modes_desc.keys()),
+            "memory_telemetry": status,
+        }
+
+    def set_operating_mode(self, mode_name: str) -> Dict[str, Any]:
+        """Transition Maven into one of the 6 canonical operating modes."""
+        from maverick.system.memory_manager import MavenOperatingMode
+        for m in MavenOperatingMode:
+            if m.value == str(mode_name).strip().lower():
+                res = self.memory_manager.set_mode(m)
+                self.notify_change()
+                return res
+        return {
+            "status": "error",
+            "message": f"Invalid mode '{mode_name}'. Valid modes: {[m.value for m in MavenOperatingMode]}",
+        }
+
+    def get_memory_profile(self) -> Dict[str, Any]:
+        """Return comprehensive subsystem RSS/PSS memory profile."""
+        return self.memory_manager.profile_all_subsystems()
+
+    def cleanup_memory(self) -> Dict[str, Any]:
+        """Perform proactive garbage collection and bound enforcement."""
+        res = self.memory_manager.enforce_memory_bounds()
+        self.notify_change()
+        return res
+
     def test_camera(self) -> Dict[str, Any]:
         """Enumerate camera and capture a single test frame to verify hardware pipeline."""
         cam = getattr(self.vision_controller, "camera", None) or self.vision_controller.engine.camera
@@ -1491,6 +1538,14 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "success", "profiles": self.hub.computer_use_agent.registry.list_profiles()})
             return
 
+        if route == "/api/system/mode":
+            self._send_json(self.hub.get_operating_mode())
+            return
+
+        if route == "/api/system/memory-profile":
+            self._send_json(self.hub.get_memory_profile())
+            return
+
         if route == "/api/events":
             self._handle_sse()
             return
@@ -1696,6 +1751,17 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
 
         if route == "/api/toolkit/document":
             res = self.hub.execute_toolkit("document", body)
+            self._send_json(res)
+            return
+
+        if route == "/api/system/mode":
+            mode_name = body.get("mode", "")
+            res = self.hub.set_operating_mode(str(mode_name))
+            self._send_json(res)
+            return
+
+        if route == "/api/system/memory-cleanup":
+            res = self.hub.cleanup_memory()
             self._send_json(res)
             return
 

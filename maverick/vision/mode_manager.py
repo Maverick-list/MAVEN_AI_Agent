@@ -277,6 +277,8 @@ class InteractionModeManager:
             if self.engine:
                 try:
                     self.engine.stop()
+                    if hasattr(self.engine, "tracker") and hasattr(self.engine.tracker, "release_resources"):
+                        self.engine.tracker.release_resources()
                 except Exception as e:
                     logger.error("Error stopping vision engine: %s", e)
 

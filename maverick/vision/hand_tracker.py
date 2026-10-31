@@ -320,6 +320,7 @@ class MediaPipeONNXHandProvider(BaseHandTrackerProvider):
         models_dir: Optional[str] = None,
         palm_conf_threshold: float = 0.5,
         hand_conf_threshold: float = 0.6,
+        lazy_load: bool = True,
     ):
         self.models_dir = models_dir or DEFAULT_VISION_MODELS_DIR
         self.palm_conf_threshold = palm_conf_threshold
@@ -327,7 +328,22 @@ class MediaPipeONNXHandProvider(BaseHandTrackerProvider):
         self._palmdet = None
         self._handpose = None
         self._kinematic_fallback = OpenCVKinematicProvider()
+        if not lazy_load:
+            self._init_models()
+
+    def _ensure_models_loaded(self) -> bool:
+        """Lazily load ONNX models into memory on first inference request."""
+        if self._palmdet is not None and self._handpose is not None:
+            return True
         self._init_models()
+        return self._palmdet is not None and self._handpose is not None
+
+    def release_models(self) -> None:
+        """Release ONNX DNN sessions and reclaim memory."""
+        self._palmdet = None
+        self._handpose = None
+        import gc
+        gc.collect()
 
     def _init_models(self) -> None:
         palm_onnx = os.path.join(self.models_dir, "palm_detection_mediapipe_2023feb.onnx")
@@ -362,10 +378,20 @@ class MediaPipeONNXHandProvider(BaseHandTrackerProvider):
 
     @property
     def is_available(self) -> bool:
+        palm_onnx = os.path.join(self.models_dir, "palm_detection_mediapipe_2023feb.onnx")
+        hand_onnx = os.path.join(self.models_dir, "handpose_estimation_mediapipe_2023feb.onnx")
+        return os.path.isfile(palm_onnx) and os.path.isfile(hand_onnx)
+
+    @property
+    def is_loaded(self) -> bool:
         return self._palmdet is not None and self._handpose is not None
 
     def process(self, frame_bgr: np.ndarray, max_hands: int = 2) -> List[HandLandmarks]:
         if not self.is_available or frame_bgr is None or frame_bgr.size == 0:
+            return self._kinematic_fallback.process(frame_bgr, max_hands=max_hands)
+
+        if not self._ensure_models_loaded():
+            return self._kinematic_fallback.process(frame_bgr, max_hands=max_hands)
             return self._kinematic_fallback.process(frame_bgr, max_hands=max_hands)
 
         h, w = frame_bgr.shape[:2]
@@ -621,3 +647,10 @@ class HandTracker:
     @property
     def provider_name(self) -> str:
         return self.get_provider_name()
+
+    def release_resources(self) -> None:
+        """Release cached landmarks and unload neural vision models to reclaim RAM."""
+        self._prev_landmarks.clear()
+        self._last_palm_centers.clear()
+        if hasattr(self.provider, "release_models"):
+            self.provider.release_models()
