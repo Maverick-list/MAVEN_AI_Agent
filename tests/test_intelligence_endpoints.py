@@ -107,6 +107,24 @@ class TestIntelligenceEndpoints(unittest.TestCase):
         self.assertEqual(recall_res["action"], "memory_recall")
         self.assertIn("teh manis", recall_res["response"].lower())
 
+    def test_plans_persistence_listing_and_lookup(self):
+        """Verify list_plans and get_plan functionality through TelemetryHub."""
+        goal = "siapkan environment development untuk CampusLink"
+        res = self.hub.submit_intelligence_plan(goal)
+        plan_id = res["plan"]["plan_id"]
+
+        # List plans
+        plans = self.hub.planner.list_plans(limit=10)
+        self.assertGreater(len(plans), 0)
+        found = any(p["plan_id"] == plan_id for p in plans)
+        self.assertTrue(found)
+
+        # Lookup plan by ID
+        plan = self.hub.planner.get_plan(plan_id)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.plan_id, plan_id)
+        self.assertEqual(plan.goal, goal)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1146,6 +1146,26 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "success", "plan": plan_dict})
             return
 
+        if route == "/api/intelligence/plans":
+            plans = self.hub.planner.list_plans(limit=25)
+            self._send_json({"status": "success", "plans": plans, "total": len(plans)})
+            return
+
+        if route.startswith("/api/intelligence/plans/"):
+            plan_id = route.split("/api/intelligence/plans/", 1)[1].strip("/")
+            plan = self.hub.planner.get_plan(plan_id)
+            if plan:
+                self._send_json({"status": "success", "plan": plan.to_dict()})
+            else:
+                self._send_json({"status": "error", "message": f"Plan '{plan_id}' not found."}, status=404)
+            return
+
+        if route == "/api/dependencies":
+            from maverick.core.dependencies import SystemDependencyVerifier
+            report = SystemDependencyVerifier.get_instance().audit_environment()
+            self._send_json({"status": "success", "environment": report})
+            return
+
         if route == "/api/intelligence/memory":
             qs = urllib.parse.parse_qs(parsed.query)
             q = qs.get("q", [""])[0]
