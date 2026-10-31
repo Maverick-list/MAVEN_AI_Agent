@@ -165,18 +165,83 @@ class VoiceController:
         self.planner = TaskPlanner(memory=self.memory)
         self.active_plan: Optional[TaskPlan] = None
         self.vision = VisionController()
+        self._conversation_history: List[Dict[str, str]] = []
+
+    def clear_conversation_history(self) -> None:
+        """Reset multi-turn conversational context buffer."""
+        self._conversation_history.clear()
+
+    def _append_conversation_turn(self, user_text: str, assistant_text: str) -> None:
+        u = (user_text or "").strip()
+        a = (assistant_text or "").strip()
+        if not u or not a:
+            return
+        self._conversation_history.append({"role": "user", "content": u})
+        self._conversation_history.append({"role": "assistant", "content": a})
+        # Keep rolling window of last 6 turns (12 messages)
+        if len(self._conversation_history) > 12:
+            del self._conversation_history[:-12]
 
     @staticmethod
-    def _build_voice_system_prompt(user_prompt: str, default_max_tokens: int = 140) -> Tuple[str, int, str]:
+    def _explicitly_requests_indonesian(text: str) -> bool:
+        lower = (text or "").lower()
+        explicit_phrases = (
+            "in indonesian",
+            "speak indonesian",
+            "reply in indonesian",
+            "answer in indonesian",
+            "bahasa indonesia",
+            "pakai bahasa indonesia",
+            "bicara bahasa indonesia",
+            "jawab dalam bahasa indonesia",
+            "gunakan bahasa indonesia",
+        )
+        return any(p in lower for p in explicit_phrases)
+
+    def _resolve_response_language(self, user_prompt: str) -> str:
+        """
+        Spoken responses default strictly to clear, natural English ('en'), even when
+        input is spoken/typed in Indonesian, unless the user explicitly asks for Indonesian
+        or configures `tts_default_language` to 'id' / 'auto'.
+        """
+        if self._explicitly_requests_indonesian(user_prompt):
+            return "id"
+        cfg_lang = str(getattr(self.config, "tts_default_language", "en") or "en").lower()
+        if cfg_lang == "id":
+            return "id"
+        if cfg_lang == "auto":
+            lower = (user_prompt or "").lower()
+            lang = detect_speech_language(user_prompt)
+            if any(
+                w in re.findall(r"[a-zA-Z]+", lower)
+                for w in ("apa", "siapa", "mengapa", "kenapa", "bagaimana", "tolong", "jelaskan", "sebutkan", "berapa", "kapan", "dimana")
+            ):
+                return "id"
+            return lang
+        return "en"
+
+    @classmethod
+    def _build_voice_system_prompt(
+        cls,
+        user_prompt: str,
+        default_max_tokens: int = 140,
+        default_language: str = "en",
+        memory_snippets: Optional[List[str]] = None,
+    ) -> Tuple[str, int, str]:
         """
         Optimize spoken response length for ordinary voice queries while preserving
         depth when the user asks for detailed steps or explanations.
+        Defaults spoken output strictly to clear, natural English unless Indonesian is explicitly requested.
         """
         lower = (user_prompt or "").lower()
-        lang = detect_speech_language(user_prompt)
-        # Check additional Indonesian question words not in TTS output keyword set
-        if any(w in re.findall(r"[a-zA-Z]+", lower) for w in ("apa", "siapa", "mengapa", "kenapa", "bagaimana", "tolong", "jelaskan", "sebutkan", "berapa", "kapan", "dimana")):
+        if cls._explicitly_requests_indonesian(user_prompt) or default_language == "id":
             lang = "id"
+        elif default_language == "auto":
+            lang = detect_speech_language(user_prompt)
+            if any(w in re.findall(r"[a-zA-Z]+", lower) for w in ("apa", "siapa", "mengapa", "kenapa", "bagaimana", "tolong", "jelaskan", "sebutkan", "berapa", "kapan", "dimana")):
+                lang = "id"
+        else:
+            lang = "en"
 
         wants_detail = any(
             kw in lower
@@ -189,18 +254,23 @@ class VoiceController:
         lang_directive = (
             "Reply strictly in natural Bahasa Indonesia."
             if lang == "id"
-            else "Reply strictly in natural English."
+            else "Understand both English and Indonesian user input, and reply strictly in clear, natural spoken English unless explicitly asked for another language."
         )
         length_directive = (
             "Provide a clear, structured spoken explanation in 3 to 5 concise sentences."
             if wants_detail
             else "Answer in 1 to 2 crisp, natural spoken sentences."
         )
+        mem_clause = ""
+        if memory_snippets:
+            joined = "; ".join(s.strip() for s in memory_snippets if s.strip())
+            if joined:
+                mem_clause = f" Approved user context: {joined}."
         sys_prompt = (
-            f"You are Maven JARVIS, a fast, calm desktop voice assistant. "
+            f"You are Maven, a fast, calm, intelligent personal AI operating assistant. "
             f"{lang_directive} {length_directive} "
             f"Plain spoken text only — no markdown, bullet symbols, or code fences. "
-            f"Never call tools or shell commands for conversational questions; answer directly."
+            f"Never call tools or shell commands for conversational questions; answer directly.{mem_clause}"
         )
         return sys_prompt, max_tokens, lang
 
@@ -270,9 +340,17 @@ class VoiceController:
         """
         metrics = metrics_out if metrics_out is not None else {}
         token = resolve_openclaw_gateway_token()
+        mem_items: List[str] = []
+        try:
+            found_mems = self.memory.search(query=prompt, limit=3)
+            mem_items = [str(m.get("content", "")) for m in found_mems if m.get("content")]
+        except Exception:
+            mem_items = []
         sys_prompt, max_tokens, lang = self._build_voice_system_prompt(
             prompt,
             default_max_tokens=int(getattr(self.config, "openclaw_voice_max_tokens", 140)),
+            default_language=str(getattr(self.config, "tts_default_language", "en") or "en"),
+            memory_snippets=mem_items,
         )
         metrics["lang"] = lang
         metrics["llm_retries"] = 0
@@ -294,6 +372,8 @@ class VoiceController:
                 }
             )
             reply = cli_res.get("response", "")
+            if cli_res.get("status") == "success" and reply:
+                self._append_conversation_turn(prompt, reply)
             sents, rem = split_meaningful_sentences(reply, flush=False)
             for s in sents:
                 yield s
@@ -310,6 +390,7 @@ class VoiceController:
         last_err_status = "error"
         last_err_spoken = "I could not reach the OpenClaw agent at this moment."
 
+        history_msgs = list(self._conversation_history[-8:]) if prompt != "Reply with OK." else []
         for attempt_idx, model_override in enumerate(candidates):
             t0 = time.perf_counter()
             payload = {
@@ -319,6 +400,7 @@ class VoiceController:
                 "max_completion_tokens": max_tokens,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
+                    *history_msgs,
                     {"role": "user", "content": prompt},
                 ],
             }
@@ -416,6 +498,9 @@ class VoiceController:
                     metrics["llm_retries"] = max(1, int(metrics.get("llm_retries") or 0) + 1)
 
                 if full_emitted:
+                    joined_reply = " ".join(full_emitted)
+                    if prompt != "Reply with OK.":
+                        self._append_conversation_turn(prompt, joined_reply)
                     metrics.update(
                         {
                             "route": "openclaw_stream",
@@ -425,7 +510,7 @@ class VoiceController:
                             "llm_ttft_ms": ttft_ms or total_ms,
                             "llm_first_sentence_ms": first_sent_ms or total_ms,
                             "llm_total_ms": total_ms,
-                            "full_response": " ".join(full_emitted),
+                            "full_response": joined_reply,
                         }
                     )
                     return
@@ -689,7 +774,8 @@ class VoiceController:
         parsed = BilingualIntentClassifier.classify(cmd)
         intent = parsed.get("intent")
         target = parsed.get("target")
-        is_id = parsed.get("is_id", False)
+        detected_id = parsed.get("is_id", False)
+        is_id = (self._resolve_response_language(cmd) == "id")
 
         # 1. Fast-path check for vision, pointer, typing, or interaction mode directives.
         # Generic "stop"/"berhenti" is handled by speech/media interrupt unless vision is active or explicit vision directive.
@@ -702,7 +788,7 @@ class VoiceController:
                 voice_logger.intent_classified(
                     intent=vis_res.get("action", "vision_action"),
                     target=None,
-                    lang="id" if is_id else "en",
+                    lang="id" if detected_id else "en",
                     confidence=0.95,
                     clean_text=cmd,
                 )
@@ -712,7 +798,7 @@ class VoiceController:
             voice_logger.intent_classified(
                 intent="unhandled",
                 target=None,
-                lang="id" if is_id else "en",
+                lang="id" if detected_id else "en",
                 confidence=0.0,
                 clean_text=cmd,
             )
@@ -721,7 +807,7 @@ class VoiceController:
         voice_logger.intent_classified(
             intent=intent,
             target=str(target) if target else None,
-            lang="id" if is_id else "en",
+            lang="id" if detected_id else "en",
             confidence=0.95,
             clean_text=cmd,
         )

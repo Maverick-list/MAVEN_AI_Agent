@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+import wave
 from typing import Any, Dict, List, Optional
 import numpy as np
 
@@ -269,43 +270,90 @@ class AudioCapture:
 
 
 class AudioPlayer:
-    """Plays audio prompts and sound effects through PipeWire / ALSA."""
+    """Plays audio prompts and synthesized speech through PipeWire / ALSA with dynamic timeout and sink failover."""
 
     def __init__(self, config: Optional[VoiceConfig] = None):
         self.config = config or VoiceConfig()
         self._current_proc: Optional[subprocess.Popen] = None
+        self._interrupted = False
         self._lock = threading.Lock()
 
+    @staticmethod
+    def estimate_wav_duration_seconds(wav_path: str) -> float:
+        """Read WAV header to compute exact duration in seconds, falling back to file-size estimate."""
+        try:
+            with wave.open(wav_path, "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate() or 24000
+                return max(0.1, float(frames) / float(rate))
+        except Exception:
+            try:
+                size_bytes = os.path.getsize(wav_path)
+                # Conservative 24kHz 16-bit mono = 48,000 bytes/sec
+                return max(0.5, float(size_bytes) / 48000.0)
+            except OSError:
+                return 10.0
+
+    def _build_player_commands(self, wav_path: str) -> List[List[str]]:
+        cmds: List[List[str]] = []
+        pw_play = shutil.which("pw-play")
+        aplay = shutil.which("aplay")
+        if pw_play:
+            cmds.append([pw_play, wav_path])
+        if aplay:
+            cmds.append([aplay, "-q", wav_path])
+        return cmds
+
     def play_wav(self, wav_path: str, wait: bool = True) -> bool:
-        """Play a WAV file using aplay or pw-play."""
+        """Play a WAV file using PipeWire (pw-play) or ALSA (aplay) with dynamic duration timeout and failover."""
         if not os.path.isfile(wav_path):
             return False
 
-        player = shutil.which("aplay") or shutil.which("pw-play")
-        if not player:
+        commands = self._build_player_commands(wav_path)
+        if not commands:
             return False
 
         self.stop()
+        with self._lock:
+            self._interrupted = False
 
-        try:
-            proc = subprocess.Popen(
-                [player, "-q", wav_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+        est_duration = self.estimate_wav_duration_seconds(wav_path)
+        wait_timeout = max(30.0, est_duration + 15.0)
+
+        for cmd in commands:
             with self._lock:
-                self._current_proc = proc
+                if self._interrupted:
+                    return False
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                with self._lock:
+                    self._current_proc = proc
 
-            if wait:
-                proc.wait(timeout=10.0)
-                return proc.returncode == 0
-            return True
-        except Exception:
-            return False
+                if not wait:
+                    return True
+
+                proc.wait(timeout=wait_timeout)
+                with self._lock:
+                    was_interrupted = self._interrupted
+                if was_interrupted:
+                    return True
+                if proc.returncode == 0:
+                    return True
+            except subprocess.TimeoutExpired:
+                self.stop()
+            except Exception:
+                continue
+
+        return False
 
     def stop(self) -> None:
-        """Interrupt and terminate active audio playback."""
+        """Interrupt and terminate active audio playback immediately."""
         with self._lock:
+            self._interrupted = True
             if self._current_proc and self._current_proc.poll() is None:
                 try:
                     self._current_proc.terminate()

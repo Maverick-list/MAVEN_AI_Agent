@@ -129,10 +129,12 @@ class VoiceSession:
             self._transition_to(VoiceState.WAKE_WORD_DETECTED)
             self._start_listening()
 
-    def _start_listening(self) -> None:
-        """Enter listening state and begin buffering user speech."""
+    def _start_listening(self, seed_audio: bytes = b"", has_speech: bool = False) -> None:
+        """Enter listening state and begin buffering user speech (preserving any wake-word pre-roll)."""
         self._audio_buffer.clear()
-        self._has_detected_speech = False
+        if seed_audio:
+            self._audio_buffer.extend(seed_audio)
+        self._has_detected_speech = bool(has_speech)
         self._listen_start_time = time.time()
         self._last_speech_time = self._listen_start_time
         self._transition_to(VoiceState.LISTENING)
@@ -179,8 +181,11 @@ class VoiceSession:
 
             if wake_triggered or clap_triggered:
                 self.last_trigger_source = "dual_clap" if clap_triggered else "wake_word"
+                seed_audio, has_cmd = b"", False
+                if wake_triggered and hasattr(self.wake_detector, "consume_trigger_audio"):
+                    seed_audio, has_cmd = self.wake_detector.consume_trigger_audio()
                 self._transition_to(VoiceState.WAKE_WORD_DETECTED)
-                self._start_listening()
+                self._start_listening(seed_audio=seed_audio, has_speech=has_cmd)
             return None
 
         # 2. State: LISTENING - Buffer speech until silence or timeout

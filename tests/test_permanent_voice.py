@@ -15,13 +15,17 @@ class TestPermanentVoiceSystem(unittest.TestCase):
 
     def test_local_neural_provider_availability(self):
         provider = LocalNeuralTTSProvider(self.config)
-        self.assertEqual(provider.voice_name, "common_voice_id_19961910")
+        self.assertEqual(provider.voice_name, "george")
         prompt_path = provider.get_voice_prompt_path()
-        self.assertTrue(prompt_path.endswith(".mp3"))
+        self.assertTrue(prompt_path.endswith(".safetensors"))
+        id_prompt_path = provider.get_voice_prompt_path(language="id")
+        self.assertTrue(id_prompt_path.endswith(".mp3"))
         status = provider.get_public_status()
         self.assertEqual(status["engine"], "local_neural")
-        self.assertEqual(status["model_name"], "pocket-tts-indonesian-6l")
+        self.assertEqual(status["model_name"], "pocket-tts-english-6l")
+        self.assertEqual(status["default_language"], "en")
         self.assertEqual(status["license"], "CC-BY-4.0")
+        self.assertTrue(len(status["voices"]) >= 8)
 
     def test_hybrid_tts_defaults_to_local_neural(self):
         mock_local = MagicMock()

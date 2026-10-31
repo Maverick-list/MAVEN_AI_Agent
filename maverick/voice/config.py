@@ -13,10 +13,33 @@ VOICE_SETTINGS_FILE = os.path.join(CONFIG_DIR, "voice_settings.json")
 DEFAULT_ELEVENLABS_VOICE_ID = "onwK4e9ZLuTAKqWW03F9"  # Daniel (British, calm, authoritative)
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 
-# Local Neural Indonesian Voice presets (Pocket TTS Indonesian 6L)
-DEFAULT_LOCAL_NEURAL_VOICE = "common_voice_id_19961910"
-DEFAULT_LOCAL_NEURAL_MODEL_DIR = os.path.expanduser("~/.local/share/maverick/models/tts/pocket-tts-indonesian")
+# Primary Local Neural English Male Voice presets (Kyutai Pocket-TTS English 6L, CC-BY-4.0)
+DEFAULT_LOCAL_NEURAL_VOICE = "george"  # Calm, authoritative British male voice
+DEFAULT_LOCAL_NEURAL_MODEL_DIR = os.path.expanduser("~/.local/share/maverick/models/tts/pocket-tts-english")
 
+# Secondary Local Neural Indonesian Voice presets (Pocket-TTS Indonesian 6L, explicit opt-in)
+DEFAULT_LOCAL_NEURAL_INDONESIAN_VOICE = "common_voice_id_19961910"
+DEFAULT_LOCAL_NEURAL_INDONESIAN_MODEL_DIR = os.path.expanduser(
+    "~/.local/share/maverick/models/tts/pocket-tts-indonesian"
+)
+
+LOCAL_NEURAL_VOICE_CATALOG: List[Dict[str, str]] = [
+    {"voice_id": "george", "name": "George (Calm British Male — Default JARVIS)", "gender": "male", "language": "en"},
+    {"voice_id": "jean", "name": "Jean (Clear Conversational Male)", "gender": "male", "language": "en"},
+    {"voice_id": "charles", "name": "Charles (Articulate British Male)", "gender": "male", "language": "en"},
+    {"voice_id": "stuart_bell", "name": "Stuart (Warm Narrative Male)", "gender": "male", "language": "en"},
+    {"voice_id": "marius", "name": "Marius (Crisp Studio Male)", "gender": "male", "language": "en"},
+    {"voice_id": "javert", "name": "Javert (Deep Authoritative Male)", "gender": "male", "language": "en"},
+    {"voice_id": "michael", "name": "Michael (Neutral American Male)", "gender": "male", "language": "en"},
+    {"voice_id": "paul", "name": "Paul (Calm Studio Male)", "gender": "male", "language": "en"},
+    {"voice_id": "alba", "name": "Alba (Clear Studio Female)", "gender": "female", "language": "en"},
+    {
+        "voice_id": "common_voice_id_19961910",
+        "name": "Arjuna ID (Indonesian 6L Secondary)",
+        "gender": "male",
+        "language": "id",
+    },
+]
 
 
 def _read_env_file_dict(path: str = ELEVENLABS_ENV_FILE) -> Dict[str, str]:
@@ -63,7 +86,6 @@ def load_voice_settings(settings_file: str = VOICE_SETTINGS_FILE) -> Dict[str, A
         with open(settings_file, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, dict):
-                # Enforce defense-in-depth: strip any accidental secret-like keys
                 return {
                     k: v
                     for k, v in data.items()
@@ -78,6 +100,7 @@ def save_voice_settings(updates: Dict[str, Any], settings_file: str = VOICE_SETT
     """Persist non-secret voice tuning settings with 0600 permissions."""
     allowed_keys = {
         "tts_engine",
+        "tts_default_language",
         "local_neural_voice",
         "local_neural_temperature",
         "local_neural_eos_threshold",
@@ -176,7 +199,7 @@ class VoiceConfig:
     whisper_server_host: str = "127.0.0.1"
     whisper_server_port: int = 18791
     use_whisper_server: bool = True
-    stt_language: str = "auto"  # auto-detect English / Indonesian
+    stt_language: str = "auto"  # Understand English & Indonesian input seamlessly
     whisper_threads: int = 8
 
     # Wake word settings
@@ -192,22 +215,25 @@ class VoiceConfig:
     listening_timeout_seconds: float = 8.0
 
     # Text-to-Speech (TTS) permanent hierarchy:
-    # PRIMARY: 'local_neural' (Indonesian Pocket-TTS 6L distilled model)
-    # OPTIONAL PREMIUM: 'elevenlabs' (explicit user opt-in)
-    # EMERGENCY FALLBACK: 'speech_dispatcher' (with audible warning)
+    # 1. PRIMARY: 'local_neural' (Kyutai Pocket-TTS English 6L, male voice 'george')
+    # 2. OPTIONAL PREMIUM: 'elevenlabs' (explicit user opt-in only)
+    # 3. EMERGENCY FALLBACK: 'speech_dispatcher' (with audible warning)
     tts_engine: str = "local_neural"
+    tts_default_language: str = "en"
     tts_voice: str = "default"
     tts_rate: int = 15  # -100 to +100 (Speech Dispatcher fallback)
     tts_pitch: int = 0  # -100 to +100
     tts_volume: int = 100  # 0 to 100
 
-    # Local Indonesian Neural Voice settings (Pocket-TTS Indonesian 6L)
+    # Local Neural Voice settings (Primary English 6L + Secondary Indonesian 6L)
     local_neural_model_dir: str = DEFAULT_LOCAL_NEURAL_MODEL_DIR
+    local_neural_indonesian_model_dir: str = DEFAULT_LOCAL_NEURAL_INDONESIAN_MODEL_DIR
     local_neural_voice: str = DEFAULT_LOCAL_NEURAL_VOICE
-    local_neural_temperature: float = 0.3
-    local_neural_eos_threshold: float = -6.0
+    local_neural_indonesian_voice: str = DEFAULT_LOCAL_NEURAL_INDONESIAN_VOICE
+    local_neural_temperature: float = 0.45
+    local_neural_eos_threshold: float = -4.0
 
-    # ElevenLabs neural voice tuning (JARVIS calm & confident profile)
+    # ElevenLabs neural voice tuning (Optional Premium)
     elevenlabs_voice_id: str = field(default_factory=_default_voice_id)
     elevenlabs_model_id: str = field(default_factory=_default_model_id)
     elevenlabs_stability: float = 0.55
@@ -231,11 +257,11 @@ class VoiceConfig:
 
     # Runtime behavior & safety guardrails
     muted: bool = False
-    feedback_prevention: bool = True  # Mute capture during TTS playback
+    feedback_prevention: bool = True
     enable_openclaw_fallback: bool = True
     model_id: str = field(default_factory=lambda: _default_openclaw_model_config()["primary"])
     model_fallbacks: List[str] = field(default_factory=lambda: _default_openclaw_model_config()["fallbacks"])
-    max_recording_seconds: float = 15.0  # Guardrail against infinite recording
+    max_recording_seconds: float = 15.0
 
     # Confirmation requirement for consequential actions
     enforce_confirmation: bool = True
@@ -249,7 +275,7 @@ class VoiceConfig:
 
     # Boot Greeting & Quiet Hours
     boot_greeting_enabled: bool = True
-    boot_greeting_lang: str = "auto"
+    boot_greeting_lang: str = "en"
     quiet_hours_enabled: bool = True
     quiet_hours_start: int = 22
     quiet_hours_end: int = 7
@@ -259,9 +285,15 @@ class VoiceConfig:
         saved = load_voice_settings()
         if not saved:
             return
-        if "tts_engine" in saved and saved["tts_engine"] in ("elevenlabs", "speech_dispatcher"):
+        if "tts_engine" in saved and saved["tts_engine"] in ("local_neural", "elevenlabs", "speech_dispatcher"):
             self.tts_engine = str(saved["tts_engine"])
+        if "tts_default_language" in saved and saved["tts_default_language"] in ("en", "id", "auto"):
+            self.tts_default_language = str(saved["tts_default_language"])
+        if "local_neural_voice" in saved and str(saved["local_neural_voice"]).strip():
+            self.local_neural_voice = str(saved["local_neural_voice"]).strip()
         for float_key, lo, hi in (
+            ("local_neural_temperature", 0.0, 1.0),
+            ("local_neural_eos_threshold", -10.0, 0.0),
             ("elevenlabs_stability", 0.0, 1.0),
             ("elevenlabs_similarity_boost", 0.0, 1.0),
             ("elevenlabs_style", 0.0, 1.0),

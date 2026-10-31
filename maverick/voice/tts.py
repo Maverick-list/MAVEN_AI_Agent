@@ -220,7 +220,7 @@ class HybridTTSProvider(TTSProvider):
                     self.last_used_engine = "local_neural"
                     return True
 
-        # PRIMARY: Local Indonesian Neural TTS (Permanent Default)
+        # PRIMARY: Local English Male Neural TTS (Permanent Default)
         if preferred == "local_neural" or preferred not in ("elevenlabs", "speech_dispatcher"):
             if self.local_neural.is_available():
                 ok_ln = self.local_neural.speak(text, wait=wait, language=language)

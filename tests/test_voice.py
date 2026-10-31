@@ -211,10 +211,14 @@ class TestVoiceSubsystem(unittest.TestCase):
         self.assertEqual(res["status"], "confirmation_required")
         self.assertIn("requires confirmation", res["response"])
 
-        # Indonesian confirmation gate
+        # Indonesian input defaults to clear English spoken confirmation unless explicitly asked for Indonesian
         res_id = ctl.handle_voice_command("Maven, buka terminal", confirmed=False)
         self.assertEqual(res_id["status"], "confirmation_required")
-        self.assertIn("memerlukan konfirmasi", res_id["response"])
+        self.assertIn("requires confirmation", res_id["response"])
+
+        res_id_explicit = ctl.handle_voice_command("Maven, buka terminal dalam bahasa indonesia", confirmed=False)
+        self.assertEqual(res_id_explicit["status"], "confirmation_required")
+        self.assertIn("memerlukan konfirmasi", res_id_explicit["response"])
 
     # 14. WhisperCppSTTProvider Unit & Integration Tests
     def test_whisper_cpp_stt_provider(self):
@@ -255,38 +259,43 @@ class TestVoiceSubsystem(unittest.TestCase):
         # Immediate repeat should be blocked by debounce
         self.assertFalse(detector.process_frame(loud_chunk))
 
-    # 16. Bilingual Indonesian Voice Commands
+    # 16. Bilingual Indonesian Input Comprehension with English-First Spoken Output
     def test_bilingual_indonesian_routing(self):
         ctl = VoiceController(self.config)
 
-        # RAM status in Indonesian
+        # Indonesian input understood -> clear English spoken response by default
         res_ram = ctl.handle_voice_command("Maven, berapa sisa ram")
         self.assertEqual(res_ram["status"], "success")
-        self.assertIn("RAM yang tersedia", res_ram["response"])
+        self.assertIn("RAM available", res_ram["response"])
 
-        # Battery status in Indonesian
+        # Explicit Indonesian request -> Indonesian spoken response
+        res_ram_id = ctl.handle_voice_command("Maven, berapa sisa ram dalam bahasa indonesia")
+        self.assertEqual(res_ram_id["status"], "success")
+        self.assertIn("RAM yang tersedia", res_ram_id["response"])
+
+        # Battery status from Indonesian input -> English spoken response
         res_bat = ctl.handle_voice_command("Maven, status baterai")
         self.assertEqual(res_bat["status"], "success")
-        self.assertIn("Baterai", res_bat["response"])
+        self.assertIn("Battery", res_bat["response"])
 
-        # Desktop context summary in Indonesian
+        # Desktop context summary from Indonesian input -> English spoken response
         res_ctx = ctl.handle_voice_command("Maven, ringkasan desktop")
         self.assertEqual(res_ctx["status"], "success")
-        self.assertIn("Ringkasan desktop", res_ctx["response"])
+        self.assertIn("Desktop summary", res_ctx["response"])
 
         # Mute in Indonesian
         res_mute = ctl.handle_voice_command("Maven, bisu")
         self.assertEqual(res_mute["status"], "success")
-        self.assertIn("Mikrofon dimatikan", res_mute["response"])
+        self.assertIn("Microphone muted", res_mute["response"])
         self.assertTrue(ctl.session.is_muted)
 
         # Unmute in Indonesian
         res_unmute = ctl.handle_voice_command("Maven, aktifkan mikrofon")
         self.assertEqual(res_unmute["status"], "success")
-        self.assertIn("Mikrofon diaktifkan", res_unmute["response"])
+        self.assertIn("Microphone unmuted", res_unmute["response"])
         self.assertFalse(ctl.session.is_muted)
 
-        # Music pause in Indonesian
+        # Music pause / interrupt in Indonesian
         with patch.object(ctl.session, "interrupt") as mock_interrupt:
             res_stop = ctl.handle_voice_command("Maven, berhenti")
             self.assertEqual(res_stop["status"], "success")
@@ -311,15 +320,15 @@ class TestVoiceSubsystem(unittest.TestCase):
         self.assertEqual(res_up["status"], "success")
         self.assertIn("Spotify volume increased", res_up["response"])
 
-        # Indonesian explicit volume
+        # Indonesian explicit volume -> understood and confirmed in English
         res_id = ctl.handle_voice_command("Maven, atur volume 80 persen")
         self.assertEqual(res_id["status"], "success")
-        self.assertIn("Volume Spotify diatur ke 80 persen", res_id["response"])
+        self.assertIn("Spotify volume set to 80 percent", res_id["response"])
 
-        # Indonesian volume down
+        # Indonesian volume down -> understood and confirmed in English
         res_down = ctl.handle_voice_command("Maven, turunkan volume")
         self.assertEqual(res_down["status"], "success")
-        self.assertIn("Volume Spotify diturunkan", res_down["response"])
+        self.assertIn("Spotify volume decreased", res_down["response"])
 
     # 18. Phase 5.3 Bilingual Intent Classifier & Prompt Verification
     def test_bilingual_intent_classifier_phrases(self):

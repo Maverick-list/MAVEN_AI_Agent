@@ -2,6 +2,8 @@
 
 import unittest
 from maverick.voice.text_normalization import (
+    number_to_english_words,
+    normalize_english_voice_text,
     number_to_indonesian_words,
     normalize_numbers,
     normalize_voice_text,
@@ -58,6 +60,23 @@ class TestTextNormalization(unittest.TestCase):
         self.assertNotIn("`", norm)
         self.assertIn("config.yaml", norm)
         self.assertIn("link", norm)
+
+    def test_english_normalization_numbers_paths_and_acronyms(self):
+        self.assertEqual(number_to_english_words(0), "zero")
+        self.assertEqual(number_to_english_words(42), "forty two")
+        self.assertEqual(number_to_english_words(8765), "eight thousand seven hundred sixty five")
+
+        raw = "CPU at 85.4% and 16 GB RAM on /home/firza/server.py via HTTP SSE!"
+        norm_en = normalize_english_voice_text(raw)
+        self.assertIn("C P U", norm_en)
+        self.assertIn("eighty five point four percent", norm_en)
+        self.assertIn("sixteen gigabytes", norm_en)
+        self.assertIn("R A M", norm_en)
+        self.assertIn("slash home slash firza slash server dot p y", norm_en)
+        self.assertIn("H T T P", norm_en)
+        self.assertIn("S S E", norm_en)
+        self.assertNotIn("!", norm_en)
+        self.assertEqual(normalize_voice_text(raw, language="en"), norm_en)
 
 
 if __name__ == "__main__":

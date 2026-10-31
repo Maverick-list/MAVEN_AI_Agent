@@ -93,8 +93,35 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         self._voiced_burst_frames = 0
         self.last_wake_ms: float = 0.0
         self._ring_buffer = bytearray()
-        # Maintain ~1.2 seconds of 16kHz 16-bit mono audio
-        self._max_buffer_bytes = int(self.config.sample_rate * 1.2 * 2)
+        self._trigger_seed_audio: bytes = b""
+        self._trigger_has_command: bool = False
+        # Maintain ~1.5 seconds of 16kHz 16-bit mono audio so rapid wake+command speech is preserved
+        self._max_buffer_bytes = int(self.config.sample_rate * 1.5 * 2)
+
+    def consume_trigger_audio(self) -> tuple[bytes, bool]:
+        """Return `(seed_audio, has_trailing_command)` captured during wake-word trigger and clear it."""
+        audio, has_cmd = self._trigger_seed_audio, self._trigger_has_command
+        self._trigger_seed_audio = b""
+        self._trigger_has_command = False
+        return audio, has_cmd
+
+    def _capture_trigger_seed(self, snapshot: bytes, transcript: str) -> None:
+        import re as _re
+        trailing = _re.sub(
+            r"^[\s,.!?-]*(?:hey\s+|hi\s+|halo\s+|hello\s+)?(?:maven|jarvis)[\s,.:!?-]*",
+            "",
+            transcript or "",
+            flags=_re.IGNORECASE,
+        ).strip()
+        if len(trailing.split()) >= 1 and len(trailing) >= 3:
+            # User spoke command continuously after wake word ("Hey Maven what is my CPU usage")
+            self._trigger_seed_audio = snapshot
+            self._trigger_has_command = True
+        else:
+            # Preserve ~250ms trailing onset pre-roll so the first syllable of the next word is never clipped
+            preroll_bytes = int(self.config.sample_rate * 0.25 * 2)
+            self._trigger_seed_audio = snapshot[-preroll_bytes:] if len(snapshot) > preroll_bytes else b""
+            self._trigger_has_command = False
 
     def reset(self) -> None:
         """Reset buffer and trigger timers."""
@@ -219,6 +246,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
         if self.TWO_WORD_WAKE.search(t1):
             self.last_wake_ms = round((time.perf_counter() - t_wake_start) * 1000.0, 1)
             voice_logger.wake_result(accepted=True, phrase=t1)
+            self._capture_trigger_seed(audio_snapshot, t1)
             self._last_trigger_time = now
             self._ring_buffer.clear()
             self._failed_checks = 0
@@ -240,6 +268,7 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
             return False
 
         voice_logger.wake_result(accepted=True, phrase=t1)
+        self._capture_trigger_seed(audio_snapshot, t1)
         self._last_trigger_time = now
         self._ring_buffer.clear()
         self._failed_checks = 0
