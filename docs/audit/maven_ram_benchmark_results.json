@@ -1,0 +1,625 @@
+{
+  "normal": {
+    "mode": "normal",
+    "switch_response": {
+      "status": "success",
+      "mode": "normal",
+      "current_mode": "normal",
+      "previous_mode": "safe_idle",
+      "changed": true,
+      "actions": [
+        "vision_deactivated_and_camera_stopped",
+        "onnx_vision_models_unloaded"
+      ],
+      "memory_profile": {
+        "pid": 81417,
+        "name": "python3",
+        "rss_mb": 535.82,
+        "pss_mb": 514.07,
+        "vms_mb": 1845.52,
+        "threads": 12,
+        "open_fds": 102
+      }
+    },
+    "transition_time_sec": 1.729,
+    "active_mode_reported": null,
+    "camera_active": false,
+    "dashboard_process": {
+      "pid": 81417,
+      "name": "python3",
+      "rss_mb": 535.82,
+      "pss_mb": 514.08,
+      "vms_mb": 1845.52,
+      "threads": 12,
+      "fds": 100
+    },
+    "tts_worker_process": null,
+    "openclaw_gateway": {
+      "pids": [
+        2871
+      ],
+      "total_rss_mb": 1806.06,
+      "total_pss_mb": 1797.62,
+      "workers": [
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.06,
+          "pss_mb": 1797.62,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "fds": 164
+        }
+      ]
+    },
+    "memory_profile_api": {
+      "status": "success",
+      "subsystems": [
+        {
+          "pid": 81417,
+          "name": "python3",
+          "rss_mb": 535.82,
+          "pss_mb": 514.07,
+          "vms_mb": 1845.52,
+          "threads": 12,
+          "open_fds": 102,
+          "component": "maven_runtime"
+        },
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.06,
+          "pss_mb": 1797.62,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "open_fds": 164,
+          "component": "openclaw_gateway"
+        }
+      ],
+      "total_maven_rss_mb": 2341.88,
+      "total_maven_pss_mb": 2311.69,
+      "system_ram": {
+        "total_gb": 14.33,
+        "used_gb": 10.31,
+        "available_gb": 4.01,
+        "percent": 72.0,
+        "swap_total_gb": 0.0,
+        "swap_used_gb": 0.0,
+        "swap_percent": 0.0,
+        "pressure_level": "healthy",
+        "active_mode": "normal"
+      },
+      "active_mode": "normal"
+    },
+    "system_available_gb": 4.01
+  },
+  "voice": {
+    "mode": "voice",
+    "switch_response": {
+      "status": "success",
+      "mode": "voice",
+      "current_mode": "voice",
+      "previous_mode": "normal",
+      "changed": true,
+      "actions": [
+        "vision_deactivated_and_camera_stopped",
+        "onnx_vision_models_unloaded"
+      ],
+      "memory_profile": {
+        "pid": 81417,
+        "name": "python3",
+        "rss_mb": 539.69,
+        "pss_mb": 518.03,
+        "vms_mb": 1834.29,
+        "threads": 10,
+        "open_fds": 98
+      }
+    },
+    "transition_time_sec": 1.73,
+    "active_mode_reported": null,
+    "camera_active": false,
+    "dashboard_process": {
+      "pid": 81417,
+      "name": "python3",
+      "rss_mb": 539.78,
+      "pss_mb": 518.12,
+      "vms_mb": 1834.29,
+      "threads": 10,
+      "fds": 96
+    },
+    "tts_worker_process": null,
+    "openclaw_gateway": {
+      "pids": [
+        2871
+      ],
+      "total_rss_mb": 1806.63,
+      "total_pss_mb": 1798.19,
+      "workers": [
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.63,
+          "pss_mb": 1798.19,
+          "vms_mb": 56238.47,
+          "threads": 26,
+          "fds": 164
+        }
+      ]
+    },
+    "memory_profile_api": {
+      "status": "success",
+      "subsystems": [
+        {
+          "pid": 81417,
+          "name": "python3",
+          "rss_mb": 539.75,
+          "pss_mb": 518.09,
+          "vms_mb": 1834.29,
+          "threads": 10,
+          "open_fds": 98,
+          "component": "maven_runtime"
+        },
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.63,
+          "pss_mb": 1798.19,
+          "vms_mb": 56238.47,
+          "threads": 26,
+          "open_fds": 164,
+          "component": "openclaw_gateway"
+        }
+      ],
+      "total_maven_rss_mb": 2346.38,
+      "total_maven_pss_mb": 2316.28,
+      "system_ram": {
+        "total_gb": 14.33,
+        "used_gb": 10.29,
+        "available_gb": 4.04,
+        "percent": 71.8,
+        "swap_total_gb": 0.0,
+        "swap_used_gb": 0.0,
+        "swap_percent": 0.0,
+        "pressure_level": "healthy",
+        "active_mode": "voice"
+      },
+      "active_mode": "voice"
+    },
+    "system_available_gb": 4.04
+  },
+  "vision": {
+    "mode": "vision",
+    "switch_response": {
+      "status": "success",
+      "mode": "vision",
+      "current_mode": "vision",
+      "previous_mode": "voice",
+      "changed": true,
+      "actions": [
+        "vision_activated: error"
+      ],
+      "memory_profile": {
+        "pid": 81417,
+        "name": "python3",
+        "rss_mb": 548.54,
+        "pss_mb": 526.79,
+        "vms_mb": 1848.69,
+        "threads": 12,
+        "open_fds": 102
+      }
+    },
+    "transition_time_sec": 1.668,
+    "active_mode_reported": null,
+    "camera_active": false,
+    "dashboard_process": {
+      "pid": 81417,
+      "name": "python3",
+      "rss_mb": 548.55,
+      "pss_mb": 526.81,
+      "vms_mb": 1848.69,
+      "threads": 12,
+      "fds": 100
+    },
+    "tts_worker_process": null,
+    "openclaw_gateway": {
+      "pids": [
+        2871
+      ],
+      "total_rss_mb": 1806.63,
+      "total_pss_mb": 1798.19,
+      "workers": [
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.63,
+          "pss_mb": 1798.19,
+          "vms_mb": 56238.47,
+          "threads": 26,
+          "fds": 164
+        }
+      ]
+    },
+    "memory_profile_api": {
+      "status": "success",
+      "subsystems": [
+        {
+          "pid": 81417,
+          "name": "python3",
+          "rss_mb": 548.55,
+          "pss_mb": 526.81,
+          "vms_mb": 1848.69,
+          "threads": 12,
+          "open_fds": 102,
+          "component": "maven_runtime"
+        },
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.63,
+          "pss_mb": 1798.19,
+          "vms_mb": 56238.47,
+          "threads": 26,
+          "open_fds": 164,
+          "component": "openclaw_gateway"
+        }
+      ],
+      "total_maven_rss_mb": 2355.18,
+      "total_maven_pss_mb": 2325.0,
+      "system_ram": {
+        "total_gb": 14.33,
+        "used_gb": 10.32,
+        "available_gb": 4.01,
+        "percent": 72.0,
+        "swap_total_gb": 0.0,
+        "swap_used_gb": 0.0,
+        "swap_percent": 0.0,
+        "pressure_level": "healthy",
+        "active_mode": "vision"
+      },
+      "active_mode": "vision"
+    },
+    "system_available_gb": 4.02
+  },
+  "full_assistant": {
+    "mode": "full_assistant",
+    "switch_response": {
+      "status": "success",
+      "mode": "full_assistant",
+      "current_mode": "full_assistant",
+      "previous_mode": "vision",
+      "changed": true,
+      "actions": [
+        "full_vision_activated"
+      ],
+      "memory_profile": {
+        "pid": 81417,
+        "name": "python3",
+        "rss_mb": 545.33,
+        "pss_mb": 523.58,
+        "vms_mb": 1845.4,
+        "threads": 12,
+        "open_fds": 102
+      }
+    },
+    "transition_time_sec": 1.398,
+    "active_mode_reported": null,
+    "camera_active": false,
+    "dashboard_process": {
+      "pid": 81417,
+      "name": "python3",
+      "rss_mb": 545.33,
+      "pss_mb": 523.58,
+      "vms_mb": 1845.59,
+      "threads": 12,
+      "fds": 100
+    },
+    "tts_worker_process": null,
+    "openclaw_gateway": {
+      "pids": [
+        2871
+      ],
+      "total_rss_mb": 1805.9,
+      "total_pss_mb": 1797.46,
+      "workers": [
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1805.9,
+          "pss_mb": 1797.46,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "fds": 164
+        }
+      ]
+    },
+    "memory_profile_api": {
+      "status": "success",
+      "subsystems": [
+        {
+          "pid": 81417,
+          "name": "python3",
+          "rss_mb": 545.33,
+          "pss_mb": 523.58,
+          "vms_mb": 1845.4,
+          "threads": 12,
+          "open_fds": 102,
+          "component": "maven_runtime"
+        },
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1805.9,
+          "pss_mb": 1797.46,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "open_fds": 164,
+          "component": "openclaw_gateway"
+        }
+      ],
+      "total_maven_rss_mb": 2351.23,
+      "total_maven_pss_mb": 2321.04,
+      "system_ram": {
+        "total_gb": 14.33,
+        "used_gb": 10.33,
+        "available_gb": 4.0,
+        "percent": 72.1,
+        "swap_total_gb": 0.0,
+        "swap_used_gb": 0.0,
+        "swap_percent": 0.0,
+        "pressure_level": "healthy",
+        "active_mode": "full_assistant"
+      },
+      "active_mode": "full_assistant"
+    },
+    "system_available_gb": 3.99
+  },
+  "low_memory": {
+    "mode": "low_memory",
+    "switch_response": {
+      "status": "success",
+      "mode": "low_memory",
+      "current_mode": "low_memory",
+      "previous_mode": "full_assistant",
+      "changed": true,
+      "actions": [
+        "vision_deactivated_and_camera_stopped",
+        "onnx_vision_models_unloaded",
+        "tts_worker_reclaimed",
+        "garbage_collection_executed",
+        "heap_trim_executed"
+      ],
+      "memory_profile": {
+        "pid": 81417,
+        "name": "python3",
+        "rss_mb": 535.38,
+        "pss_mb": 513.65,
+        "vms_mb": 1845.52,
+        "threads": 12,
+        "open_fds": 103
+      }
+    },
+    "transition_time_sec": 1.999,
+    "active_mode_reported": null,
+    "camera_active": false,
+    "dashboard_process": {
+      "pid": 81417,
+      "name": "python3",
+      "rss_mb": 535.72,
+      "pss_mb": 513.97,
+      "vms_mb": 1845.52,
+      "threads": 12,
+      "fds": 100
+    },
+    "tts_worker_process": null,
+    "openclaw_gateway": {
+      "pids": [
+        2871
+      ],
+      "total_rss_mb": 1806.05,
+      "total_pss_mb": 1797.61,
+      "workers": [
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.05,
+          "pss_mb": 1797.61,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "fds": 164
+        }
+      ]
+    },
+    "memory_profile_api": {
+      "status": "success",
+      "subsystems": [
+        {
+          "pid": 81417,
+          "name": "python3",
+          "rss_mb": 535.7,
+          "pss_mb": 513.95,
+          "vms_mb": 1845.52,
+          "threads": 12,
+          "open_fds": 102,
+          "component": "maven_runtime"
+        },
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.05,
+          "pss_mb": 1797.61,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "open_fds": 164,
+          "component": "openclaw_gateway"
+        }
+      ],
+      "total_maven_rss_mb": 2341.75,
+      "total_maven_pss_mb": 2311.56,
+      "system_ram": {
+        "total_gb": 14.33,
+        "used_gb": 10.31,
+        "available_gb": 4.02,
+        "percent": 71.9,
+        "swap_total_gb": 0.0,
+        "swap_used_gb": 0.0,
+        "swap_percent": 0.0,
+        "pressure_level": "healthy",
+        "active_mode": "low_memory"
+      },
+      "active_mode": "low_memory"
+    },
+    "system_available_gb": 4.03
+  },
+  "safe_idle": {
+    "mode": "safe_idle",
+    "switch_response": {
+      "status": "success",
+      "mode": "safe_idle",
+      "current_mode": "safe_idle",
+      "previous_mode": "low_memory",
+      "changed": true,
+      "actions": [
+        "vision_deactivated_and_camera_stopped",
+        "onnx_vision_models_unloaded",
+        "tts_worker_reclaimed"
+      ],
+      "memory_profile": {
+        "pid": 81417,
+        "name": "python3",
+        "rss_mb": 535.37,
+        "pss_mb": 513.62,
+        "vms_mb": 1845.52,
+        "threads": 12,
+        "open_fds": 103
+      }
+    },
+    "transition_time_sec": 1.964,
+    "active_mode_reported": null,
+    "camera_active": false,
+    "dashboard_process": {
+      "pid": 81417,
+      "name": "python3",
+      "rss_mb": 535.82,
+      "pss_mb": 514.07,
+      "vms_mb": 1845.52,
+      "threads": 12,
+      "fds": 100
+    },
+    "tts_worker_process": null,
+    "openclaw_gateway": {
+      "pids": [
+        2871
+      ],
+      "total_rss_mb": 1806.05,
+      "total_pss_mb": 1797.61,
+      "workers": [
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.05,
+          "pss_mb": 1797.61,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "fds": 164
+        }
+      ]
+    },
+    "memory_profile_api": {
+      "status": "success",
+      "subsystems": [
+        {
+          "pid": 81417,
+          "name": "python3",
+          "rss_mb": 535.79,
+          "pss_mb": 514.04,
+          "vms_mb": 1845.52,
+          "threads": 12,
+          "open_fds": 102,
+          "component": "maven_runtime"
+        },
+        {
+          "pid": 2871,
+          "name": "node-MainThread",
+          "rss_mb": 1806.05,
+          "pss_mb": 1797.61,
+          "vms_mb": 56237.72,
+          "threads": 26,
+          "open_fds": 164,
+          "component": "openclaw_gateway"
+        }
+      ],
+      "total_maven_rss_mb": 2341.84,
+      "total_maven_pss_mb": 2311.65,
+      "system_ram": {
+        "total_gb": 14.33,
+        "used_gb": 10.29,
+        "available_gb": 4.04,
+        "percent": 71.8,
+        "swap_total_gb": 0.0,
+        "swap_used_gb": 0.0,
+        "swap_percent": 0.0,
+        "pressure_level": "healthy",
+        "active_mode": "safe_idle"
+      },
+      "active_mode": "safe_idle"
+    },
+    "system_available_gb": 4.04
+  },
+  "tts_lifecycle": {
+    "voice_test_result": {
+      "status": "success",
+      "engine": "local_neural",
+      "playback_mode": "browser_webaudio",
+      "audio_url": "/api/voice/stream/I8C894T7N5FEEdr_w5bO2Q",
+      "text": "Good day. Maven JARVIS holographic control center is online and ready for your instructions.",
+      "voice_name": "george",
+      "latency_ms": 0.0,
+      "metrics": {
+        "ok": true,
+        "load": 0.6559,
+        "voice": 0.0009,
+        "ttfb_ms": 198.2,
+        "gen": 2.5567,
+        "dur": 5.36,
+        "rtf": 0.477,
+        "rms": 0.1118,
+        "sample_rate": 24000,
+        "rss_mb": 1029.0,
+        "elapsed_ms": 5270.4,
+        "output_path": "/tmp/tmpl461cxkd.wav",
+        "voice_used": "george",
+        "language": "en",
+        "normalized_text": "Good day. Maven JARVIS holographic control center is online and ready for your instructions."
+      }
+    },
+    "tts_active_metrics": {
+      "pid": 81604,
+      "name": "python",
+      "rss_mb": 863.78,
+      "pss_mb": 815.71,
+      "vms_mb": 1485.19,
+      "threads": 3,
+      "fds": 4
+    },
+    "cleanup_result": {
+      "status": "success",
+      "pressure": "healthy",
+      "available_gb": 3.2,
+      "actions_executed": [
+        "unloaded_vision_models",
+        "closed_idle_tts_worker",
+        "gc_freed_0_objects_and_heap_trimmed"
+      ]
+    },
+    "tts_worker_terminated": true,
+    "dashboard_post_cleanup": {
+      "pid": 81417,
+      "name": "python3",
+      "rss_mb": 535.96,
+      "pss_mb": 514.13,
+      "vms_mb": 1854.02,
+      "threads": 12,
+      "fds": 100
+    }
+  }
+}

@@ -51,6 +51,7 @@ import numpy as np
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
+
 from pocket_tts import TTSModel
 
 models_cache = {}
@@ -189,13 +190,16 @@ class LocalNeuralTTSProvider:
         self.venv_python = venv_python or getattr(self.config, "local_neural_venv_python", DEFAULT_VENV_PYTHON)
         self.player = AudioPlayer(self.config)
 
-        self._lock = threading.Lock()
-        self._worker_lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._worker_lock = threading.RLock()
         self._worker_proc: Optional[subprocess.Popen] = None
         self._is_speaking = False
         self._stop_requested = False
         self._last_metrics: Dict[str, Any] = {}
         self._last_error: Optional[str] = None
+        self.idle_timeout_sec = float(getattr(self.config, "local_neural_idle_timeout_sec", 60.0))
+        self._idle_timer: Optional[threading.Timer] = None
+        self._last_synthesis_time = time.time()
 
     def _resolve_language_and_bundle(
         self, voice_name: Optional[str] = None, language: Optional[str] = None
@@ -339,6 +343,7 @@ class LocalNeuralTTSProvider:
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
+        env["MALLOC_ARENA_MAX"] = "2"
 
         try:
             proc = subprocess.Popen(
@@ -361,10 +366,45 @@ class LocalNeuralTTSProvider:
         self._worker_proc = None
         return None
 
+    def _arm_idle_timer(self) -> None:
+        """Schedule auto-shutdown of warm worker after inactivity to reclaim RAM."""
+        with self._worker_lock:
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+            if self.idle_timeout_sec > 0 and self._worker_proc is not None:
+                self._idle_timer = threading.Timer(self.idle_timeout_sec, self._on_idle_timeout)
+                self._idle_timer.daemon = True
+                self._idle_timer.start()
+
+    def _on_idle_timeout(self) -> None:
+        """Called when worker idle timeout expires without new synthesis requests."""
+        with self._worker_lock:
+            if self._worker_proc is not None and not self._is_speaking:
+                time_since_last = time.time() - self._last_synthesis_time
+                if time_since_last >= self.idle_timeout_sec:
+                    try:
+                        if self._worker_proc.stdin:
+                            self._worker_proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
+                            self._worker_proc.stdin.flush()
+                        self._worker_proc.terminate()
+                        self._worker_proc.wait(timeout=1.0)
+                    except Exception:
+                        try:
+                            self._worker_proc.kill()
+                        except Exception:
+                            pass
+                    finally:
+                        self._worker_proc = None
+                        self._idle_timer = None
+
     def close(self) -> None:
-        """Gracefully terminate warm TTS worker process."""
+        """Gracefully terminate warm TTS worker process and release memory."""
         self.stop()
         with self._worker_lock:
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+                self._idle_timer = None
             if self._worker_proc is not None:
                 try:
                     if self._worker_proc.stdin:
@@ -461,6 +501,8 @@ class LocalNeuralTTSProvider:
                         resp["normalized_text"] = normalized_text
                         self._last_metrics = resp
                         self._last_error = None
+                        self._last_synthesis_time = time.time()
+                        self._arm_idle_timer()
                         return resp
                     else:
                         self._last_error = str(resp.get("error", "unknown_worker_error"))
@@ -536,6 +578,7 @@ class LocalNeuralTTSProvider:
             if wait:
                 with self._lock:
                     self._is_speaking = False
+                self._arm_idle_timer()
                 if os.path.exists(tmp_wav):
                     try:
                         os.unlink(tmp_wav)
@@ -598,6 +641,7 @@ class LocalNeuralTTSProvider:
         finally:
             with self._lock:
                 self._is_speaking = False
+            self._arm_idle_timer()
 
     def get_public_status(self) -> Dict[str, Any]:
         """Return non-sensitive public operational status for Control Center Dashboard."""

@@ -248,17 +248,32 @@ class MemoryManager:
                     except Exception:
                         pass
 
-                # Run Python garbage collector
+                # Run Python garbage collector and trim glibc heap
                 gc.collect()
+                try:
+                    import ctypes
+                    ctypes.CDLL("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
                 actions_taken.append("garbage_collection_executed")
+                actions_taken.append("heap_trim_executed")
 
             if target_mode == MavenOperatingMode.SAFE_IDLE:
-                # Halt audio stream if daemon is present
+                # Halt audio stream and reclaim warm TTS worker
+                tts_prov = self._registered_components.get("tts_provider")
+                if tts_prov and hasattr(tts_prov, "close"):
+                    tts_prov.close()
+                    actions_taken.append("tts_worker_reclaimed")
                 voice_daemon = self._registered_components.get("voice_daemon")
                 if voice_daemon and hasattr(voice_daemon, "pause"):
                     voice_daemon.pause()
                     actions_taken.append("voice_daemon_paused")
                 gc.collect()
+                try:
+                    import ctypes
+                    ctypes.CDLL("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
 
             self._current_mode = target_mode
             self._persist_mode()
@@ -357,6 +372,10 @@ class MemoryManager:
         - Whisper STT microservice (18791)
         - Subprocess workers (Pocket TTS worker, Chrome)
         """
+        now = time.time()
+        if hasattr(self, "_cached_profile") and (now - getattr(self, "_cached_profile_ts", 0.0)) < 1.0:
+            return self._cached_profile
+
         subsystems: List[Dict[str, Any]] = []
 
         # 1. Main process
@@ -397,7 +416,7 @@ class MemoryManager:
         total_maven_rss = sum(s.get("rss_mb", 0.0) for s in subsystems if "rss_mb" in s)
         total_maven_pss = sum(s.get("pss_mb", 0.0) for s in subsystems if "pss_mb" in s)
 
-        return {
+        res = {
             "status": "success",
             "subsystems": subsystems,
             "total_maven_rss_mb": round(total_maven_rss, 2),
@@ -405,20 +424,24 @@ class MemoryManager:
             "system_ram": self.get_system_memory_status(),
             "active_mode": self._current_mode.value,
         }
+        self._cached_profile = res
+        self._cached_profile_ts = now
+        return res
 
-    def enforce_memory_bounds(self) -> Dict[str, Any]:
+    def enforce_memory_bounds(self, force: bool = False) -> Dict[str, Any]:
         """
-        Check memory pressure and take automated defensive steps if critical.
+        Check memory pressure and take automated defensive steps if critical or forced.
         Guarantees that Maven will not cause the system to freeze or swap.
         """
         status = self.get_system_memory_status()
         pressure = status["pressure_level"]
         actions = []
 
-        if pressure in ("high", "critical"):
-            logger.warning("Memory pressure is %s (Avail: %s GB). Applying mitigation.", pressure, status["available_gb"])
-            # 1. Unload vision models if currently in Normal or Voice mode
-            if self._current_mode in (MavenOperatingMode.NORMAL, MavenOperatingMode.VOICE, MavenOperatingMode.LOW_MEMORY):
+        if force or pressure in ("high", "critical"):
+            if not force:
+                logger.warning("Memory pressure is %s (Avail: %s GB). Applying mitigation.", pressure, status["available_gb"])
+            # 1. Unload vision models if currently in Normal, Voice, or Low Memory mode
+            if force or self._current_mode in (MavenOperatingMode.NORMAL, MavenOperatingMode.VOICE, MavenOperatingMode.LOW_MEMORY):
                 vis_ctl = self._registered_components.get("vision_controller")
                 if vis_ctl and hasattr(vis_ctl, "engine") and hasattr(vis_ctl.engine, "tracker"):
                     if hasattr(vis_ctl.engine.tracker, "release_resources"):
@@ -431,9 +454,14 @@ class MemoryManager:
                 tts_prov.close()
                 actions.append("closed_idle_tts_worker")
 
-            # 3. Trigger immediate garbage collection
+            # 3. Trigger immediate garbage collection and trim heap
             freed_objs = gc.collect()
-            actions.append(f"gc_freed_{freed_objs}_objects")
+            try:
+                import ctypes
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
+            actions.append(f"gc_freed_{freed_objs}_objects_and_heap_trimmed")
 
         return {
             "status": "success",

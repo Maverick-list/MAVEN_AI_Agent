@@ -1,0 +1,20 @@
+{
+  "total_requests": 300,
+  "concurrency": 8,
+  "elapsed_sec": 28.73,
+  "requests_per_sec": 10.4,
+  "failed_requests": 21,
+  "latency_avg_ms": 666.59,
+  "latency_p50_ms": 21.21,
+  "latency_p95_ms": 5005.18,
+  "rss_initial_mb": 546.52,
+  "rss_final_mb": 552.41,
+  "rss_drift_mb": 5.89,
+  "threads_initial": 10,
+  "threads_final": 16,
+  "threads_drift": 6,
+  "fds_initial": 92,
+  "fds_final": 96,
+  "fds_drift": 4,
+  "status": "FAIL"
+}

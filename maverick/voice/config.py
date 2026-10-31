@@ -104,6 +104,7 @@ def save_voice_settings(updates: Dict[str, Any], settings_file: str = VOICE_SETT
         "local_neural_voice",
         "local_neural_temperature",
         "local_neural_eos_threshold",
+        "local_neural_idle_timeout_sec",
         "elevenlabs_voice_id",
         "elevenlabs_model_id",
         "elevenlabs_stability",
@@ -232,6 +233,7 @@ class VoiceConfig:
     local_neural_indonesian_voice: str = DEFAULT_LOCAL_NEURAL_INDONESIAN_VOICE
     local_neural_temperature: float = 0.45
     local_neural_eos_threshold: float = -4.0
+    local_neural_idle_timeout_sec: float = 60.0
 
     # ElevenLabs neural voice tuning (Optional Premium)
     elevenlabs_voice_id: str = field(default_factory=_default_voice_id)

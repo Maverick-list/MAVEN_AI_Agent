@@ -2,6 +2,7 @@
 
 import argparse
 from collections import deque
+import concurrent.futures
 import fcntl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,27 @@ import threading
 import time
 import urllib.parse
 from typing import Any, Deque, Dict, List, Optional, Tuple
+
+# Restrict background thread pools and glibc memory arenas on multi-core systems
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "2")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "2")
+os.environ.setdefault("MALLOC_ARENA_MAX", "2")
+
+try:
+    import ctypes
+    _libc = ctypes.CDLL("libc.so.6")
+    _libc.mallopt(-8, 2)  # M_ARENA_MAX = 2
+except Exception:
+    pass
+
+try:
+    import cv2
+    cv2.setNumThreads(2)
+except Exception:
+    pass
 
 # Ensure AT-SPI accessibility bus address is available for non-interactive shells
 _uid = os.getuid()
@@ -1238,7 +1260,7 @@ class TelemetryHub:
 
     def cleanup_memory(self) -> Dict[str, Any]:
         """Perform proactive garbage collection and bound enforcement."""
-        res = self.memory_manager.enforce_memory_bounds()
+        res = self.memory_manager.enforce_memory_bounds(force=True)
         self.notify_change()
         return res
 
@@ -1373,6 +1395,7 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
     """HTTP + SSE request handler bound strictly to 127.0.0.1."""
 
     protocol_version = "HTTP/1.1"
+    timeout = 5.0
 
     @property
     def hub(self) -> TelemetryHub:
@@ -1398,10 +1421,12 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+            self.close_connection = True
         except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+            self.close_connection = True
 
     def _read_json_body(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -1479,10 +1504,12 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(frame_bytes)))
                 self.send_header("Cache-Control", "no-store, no-cache")
+                self.send_header("Connection", "close")
                 self.end_headers()
                 self.wfile.write(frame_bytes)
+                self.close_connection = True
             except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
+                self.close_connection = True
             return
 
         if route == "/api/voice/voices":
@@ -1527,10 +1554,12 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(audio_bytes)))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
                 self.end_headers()
                 self.wfile.write(audio_bytes)
+                self.close_connection = True
             except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
+                self.close_connection = True
             return
 
         if route == "/api/computer-use/status":
@@ -1818,12 +1847,14 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(content)
+        self.close_connection = True
 
 
 class ControlCenterServer(ThreadingHTTPServer):
-    """Multi-threaded local-only HTTP/SSE Control Center server."""
+    """Bounded-concurrency local-only HTTP/SSE Control Center server."""
 
     daemon_threads = True
     allow_reuse_address = True
@@ -1839,7 +1870,19 @@ class ControlCenterServer(ThreadingHTTPServer):
                 f"Security policy violation: ControlCenterServer must bind strictly to 127.0.0.1 (got '{host}')."
             )
         self.hub = hub or TelemetryHub()
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=8,
+            thread_name_prefix="DashboardWorker",
+        )
         super().__init__((host, port), ControlCenterRequestHandler)
+
+    def process_request(self, request, client_address):
+        """Submit incoming requests to the bounded worker pool instead of unbounded thread creation."""
+        self._executor.submit(self.process_request_thread, request, client_address)
+
+    def server_close(self):
+        super().server_close()
+        self._executor.shutdown(wait=False)
 
 
 def run_dashboard_server(
