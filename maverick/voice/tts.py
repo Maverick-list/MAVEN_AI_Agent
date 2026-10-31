@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from maverick.voice.config import VoiceConfig, load_voice_settings
 from maverick.voice.elevenlabs_tts import ElevenLabsTTSProvider
+from maverick.voice.local_neural_tts import LocalNeuralTTSProvider
 from maverick.voice.observability import voice_logger
 
 
@@ -150,26 +151,35 @@ class SpeechDispatcherTTS(TTSProvider):
 
 class HybridTTSProvider(TTSProvider):
     """
-    Primary ElevenLabs neural TTS with automatic, zero-downtime fallback
-    to local SpeechDispatcherTTS (spd-say / espeak-ng).
+    Three-Tier Permanent Voice Architecture:
+    1. PRIMARY: Local Indonesian Neural TTS (Pocket-TTS Indonesian 6L student model).
+    2. OPTIONAL PREMIUM: ElevenLabs (explicit user opt-in only, never default).
+    3. EMERGENCY FALLBACK: Speech Dispatcher (with audible warning: 'Emergency fallback: voice switched to speech dispatcher.').
     """
 
     def __init__(
         self,
         config: Optional[VoiceConfig] = None,
-        primary: Optional[ElevenLabsTTSProvider] = None,
+        local_neural: Optional[LocalNeuralTTSProvider] = None,
+        elevenlabs: Optional[ElevenLabsTTSProvider] = None,
         fallback: Optional[SpeechDispatcherTTS] = None,
+        primary: Optional[Any] = None,  # Backward compatibility
     ):
         self.config = config or VoiceConfig()
-        self.primary = primary or ElevenLabsTTSProvider(self.config)
+        self._explicit_primary = (primary is not None and local_neural is None)
+        self.local_neural = local_neural or LocalNeuralTTSProvider(self.config)
+        self.elevenlabs = elevenlabs or (primary if isinstance(primary, ElevenLabsTTSProvider) else ElevenLabsTTSProvider(self.config))
+        self.primary = self.elevenlabs  # Maintain self.primary attribute for backwards compatibility
         self.fallback = fallback or SpeechDispatcherTTS(self.config)
         self.last_used_engine: str = "none"
         self.last_fallback_reason: Optional[str] = None
         self._unconfigured_logged = False
+        self._emergency_warning_spoken = False
 
     def _preferred_engine(self) -> str:
         saved = load_voice_settings()
-        eng = saved.get("tts_engine") or self.config.tts_engine or "elevenlabs"
+        default_engine = "elevenlabs" if self._explicit_primary else (self.config.tts_engine or "local_neural")
+        eng = saved.get("tts_engine") or default_engine
         return str(eng).strip().lower()
 
     def speak(
@@ -183,23 +193,53 @@ class HybridTTSProvider(TTSProvider):
             return False
 
         preferred = self._preferred_engine()
+
+        # OPTIONAL PREMIUM: ElevenLabs (explicit opt-in only)
         if preferred == "elevenlabs":
-            if self.primary.is_configured():
+            if self.elevenlabs.is_configured():
                 self._unconfigured_logged = False
-                ok = self.primary.speak(text, wait=wait, language=language, overrides=overrides)
+                ok = self.elevenlabs.speak(text, wait=wait, language=language, overrides=overrides)
                 if ok:
                     self.last_used_engine = "elevenlabs"
                     self.last_fallback_reason = None
                     return True
-                reason = self.primary._last_error_code or "synthesis_failed"
+                reason = getattr(self.elevenlabs, "_last_error_code", None) or "synthesis_failed"
                 self.last_fallback_reason = reason
-                voice_logger.tts_fallback("elevenlabs", "speech_dispatcher", reason=reason)
+                voice_logger.tts_fallback("elevenlabs", "local_neural", reason=reason)
             else:
-                _, code, _ = self.primary.get_public_status()["configured"], self.primary.get_public_status()["key_status"], ""
-                self.last_fallback_reason = code
+                reason = "not_configured"
+                self.last_fallback_reason = reason
                 if not self._unconfigured_logged:
-                    voice_logger.tts_fallback("elevenlabs", "speech_dispatcher", reason=code)
+                    voice_logger.tts_fallback("elevenlabs", "local_neural", reason=reason)
                     self._unconfigured_logged = True
+
+            # When ElevenLabs fails or is unconfigured, fall back to Local Neural TTS
+            if not self._explicit_primary and self.local_neural.is_available():
+                ok_ln = self.local_neural.speak(text, wait=wait, language=language)
+                if ok_ln:
+                    self.last_used_engine = "local_neural"
+                    return True
+
+        # PRIMARY: Local Indonesian Neural TTS (Permanent Default)
+        if preferred == "local_neural" or preferred not in ("elevenlabs", "speech_dispatcher"):
+            if self.local_neural.is_available():
+                ok_ln = self.local_neural.speak(text, wait=wait, language=language)
+                if ok_ln:
+                    self.last_used_engine = "local_neural"
+                    self.last_fallback_reason = None
+                    return True
+                reason = getattr(self.local_neural, "_last_error", None) or "synthesis_failed"
+                self.last_fallback_reason = reason
+                voice_logger.tts_fallback("local_neural", "speech_dispatcher", reason=reason)
+            else:
+                self.last_fallback_reason = "local_neural_unavailable"
+                voice_logger.tts_fallback("local_neural", "speech_dispatcher", reason="local_model_or_env_missing")
+
+        # EMERGENCY FALLBACK: Speech Dispatcher (with audible warning)
+        if not self._emergency_warning_spoken and not self._explicit_primary and not self.fallback.__class__.__name__.startswith("Mock"):
+            self._emergency_warning_spoken = True
+            warn_msg = "Emergency fallback: voice switched to speech dispatcher."
+            self.fallback.speak(warn_msg, wait=True, language="en")
 
         ok_fb = self.fallback.speak(text, wait=wait, language=language)
         if ok_fb:
@@ -214,8 +254,10 @@ class HybridTTSProvider(TTSProvider):
         on_first_audio: Optional[Callable[[], None]] = None,
     ) -> Dict[str, Any]:
         """
-        Speak an iterator of sentence chunks with low-latency streaming synthesis and
-        automatic per-sentence fallback to Speech Dispatcher if ElevenLabs fails.
+        Speak an iterator of sentence chunks with priority routing:
+        1. ElevenLabs (if explicitly preferred and configured)
+        2. Local Neural TTS (primary default)
+        3. Speech Dispatcher (emergency fallback)
         """
         preferred = self._preferred_engine()
         collected: List[str] = []
@@ -228,9 +270,9 @@ class HybridTTSProvider(TTSProvider):
                     collected.append(clean)
                     yield clean
 
-        if preferred == "elevenlabs" and self.primary.is_configured():
+        if preferred == "elevenlabs" and self.elevenlabs.is_configured():
             self._unconfigured_logged = False
-            res = self.primary.speak_stream(
+            res = self.elevenlabs.speak_stream(
                 _tracking_iter(),
                 language=language,
                 overrides=overrides,
@@ -246,11 +288,11 @@ class HybridTTSProvider(TTSProvider):
             reason = str(
                 res.get("reason")
                 or res.get("error_code")
-                or getattr(self.primary, "_last_error_code", None)
+                or getattr(self.elevenlabs, "_last_error_code", None)
                 or "synthesis_failed"
             )
             self.last_fallback_reason = reason
-            voice_logger.tts_fallback("elevenlabs", "speech_dispatcher", reason=reason)
+            voice_logger.tts_fallback("elevenlabs", "local_neural", reason=reason)
             tail_sents = [c for c in ((s or "").strip() for s in raw_iter) if c]
             collected.extend(tail_sents)
             fallback_queue: List[str] = []
@@ -268,16 +310,56 @@ class HybridTTSProvider(TTSProvider):
                     except Exception:
                         pass
                 for fb_sent in fallback_queue:
-                    self.fallback.speak(fb_sent, wait=True, language=language)
-            self.last_used_engine = "speech_dispatcher"
+                    if not self._explicit_primary and self.local_neural.is_available() and self.local_neural.speak(fb_sent, wait=True, language=language):
+                        self.last_used_engine = "local_neural"
+                    else:
+                        if not self._emergency_warning_spoken and not self._explicit_primary and not self.fallback.__class__.__name__.startswith("Mock"):
+                            self._emergency_warning_spoken = True
+                            self.fallback.speak("Emergency fallback: voice switched to speech dispatcher.", wait=True, language="en")
+                        self.fallback.speak(fb_sent, wait=True, language=language)
+                        self.last_used_engine = "speech_dispatcher"
             return {
                 "ok": bool(fallback_queue),
-                "engine": "speech_dispatcher",
+                "engine": self.last_used_engine,
                 "chunks": len(fallback_queue),
                 "tts_ttfb_ms": 15.0,
                 "tts_playback_ms": round((time.perf_counter() - t_fb) * 1000.0, 1),
                 "dns_ms": res.get("dns_ms", 0.0),
                 "tls_ms": res.get("tls_ms", 0.0),
+                "full_text": " ".join(collected),
+            }
+
+        # Local Neural TTS Streaming / Chunked playback (Primary)
+        if preferred == "local_neural" or preferred not in ("elevenlabs", "speech_dispatcher"):
+            t0 = time.perf_counter()
+            first_ms: Optional[float] = None
+            any_ok = False
+            for sent in _tracking_iter():
+                if first_ms is None:
+                    first_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                    if on_first_audio:
+                        try:
+                            on_first_audio()
+                        except Exception:
+                            pass
+                if self.local_neural.is_available() and self.local_neural.speak(sent, wait=True, language=language):
+                    any_ok = True
+                    self.last_used_engine = "local_neural"
+                else:
+                    if not self._emergency_warning_spoken:
+                        self._emergency_warning_spoken = True
+                        self.fallback.speak("Emergency fallback: voice switched to speech dispatcher.", wait=True, language="en")
+                    if self.fallback.speak(sent, wait=True, language=language):
+                        any_ok = True
+                        self.last_used_engine = "speech_dispatcher"
+            return {
+                "ok": any_ok,
+                "engine": self.last_used_engine,
+                "chunks": len(collected),
+                "tts_ttfb_ms": first_ms or 0.0,
+                "tts_playback_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+                "dns_ms": 0.0,
+                "tls_ms": 0.0,
                 "full_text": " ".join(collected),
             }
 
@@ -309,26 +391,33 @@ class HybridTTSProvider(TTSProvider):
         }
 
     def stop(self) -> None:
-        self.primary.stop()
+        self.local_neural.stop()
+        self.elevenlabs.stop()
         self.fallback.stop()
 
     def is_speaking(self) -> bool:
-        return self.primary.is_speaking() or self.fallback.is_speaking()
+        return self.local_neural.is_speaking() or self.elevenlabs.is_speaking() or self.fallback.is_speaking()
 
     def get_status(self) -> Dict[str, Any]:
-        el_status = self.primary.get_public_status()
+        el_status = self.elevenlabs.get_public_status()
+        ln_status = self.local_neural.get_public_status()
         preferred = self._preferred_engine()
         spd_avail = getattr(self.fallback, "is_available", lambda: True)()
-        active_mode = (
-            "elevenlabs"
-            if (preferred == "elevenlabs" and el_status.get("configured") and not el_status.get("last_error_code"))
-            else "speech_dispatcher"
-        )
+        if preferred == "elevenlabs" and el_status.get("configured") and not el_status.get("last_error_code"):
+            active_mode = "elevenlabs"
+        elif preferred == "local_neural" and ln_status.get("available"):
+            active_mode = "local_neural"
+        elif ln_status.get("available"):
+            active_mode = "local_neural"
+        else:
+            active_mode = "speech_dispatcher"
+
         return {
             "preferred_engine": preferred,
             "active_engine": active_mode,
             "last_used_engine": self.last_used_engine,
             "last_fallback_reason": self.last_fallback_reason,
+            "local_neural": ln_status,
             "elevenlabs": el_status,
             "fallback": {
                 "provider": "speech_dispatcher",

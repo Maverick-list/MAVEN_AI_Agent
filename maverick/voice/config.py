@@ -13,6 +13,11 @@ VOICE_SETTINGS_FILE = os.path.join(CONFIG_DIR, "voice_settings.json")
 DEFAULT_ELEVENLABS_VOICE_ID = "onwK4e9ZLuTAKqWW03F9"  # Daniel (British, calm, authoritative)
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 
+# Local Neural Indonesian Voice presets (Pocket TTS Indonesian 6L)
+DEFAULT_LOCAL_NEURAL_VOICE = "common_voice_id_19961910"
+DEFAULT_LOCAL_NEURAL_MODEL_DIR = os.path.expanduser("~/.local/share/maverick/models/tts/pocket-tts-indonesian")
+
+
 
 def _read_env_file_dict(path: str = ELEVENLABS_ENV_FILE) -> Dict[str, str]:
     """Read KEY=VALUE pairs from ~/.config/maverick/elevenlabs.env without logging values."""
@@ -73,6 +78,9 @@ def save_voice_settings(updates: Dict[str, Any], settings_file: str = VOICE_SETT
     """Persist non-secret voice tuning settings with 0600 permissions."""
     allowed_keys = {
         "tts_engine",
+        "local_neural_voice",
+        "local_neural_temperature",
+        "local_neural_eos_threshold",
         "elevenlabs_voice_id",
         "elevenlabs_model_id",
         "elevenlabs_stability",
@@ -183,12 +191,21 @@ class VoiceConfig:
     silence_duration_seconds: float = 1.2
     listening_timeout_seconds: float = 8.0
 
-    # Text-to-Speech (TTS) primary & fallback settings
-    tts_engine: str = "elevenlabs"  # primary 'elevenlabs' with automatic fallback to 'speech_dispatcher'
+    # Text-to-Speech (TTS) permanent hierarchy:
+    # PRIMARY: 'local_neural' (Indonesian Pocket-TTS 6L distilled model)
+    # OPTIONAL PREMIUM: 'elevenlabs' (explicit user opt-in)
+    # EMERGENCY FALLBACK: 'speech_dispatcher' (with audible warning)
+    tts_engine: str = "local_neural"
     tts_voice: str = "default"
     tts_rate: int = 15  # -100 to +100 (Speech Dispatcher fallback)
     tts_pitch: int = 0  # -100 to +100
     tts_volume: int = 100  # 0 to 100
+
+    # Local Indonesian Neural Voice settings (Pocket-TTS Indonesian 6L)
+    local_neural_model_dir: str = DEFAULT_LOCAL_NEURAL_MODEL_DIR
+    local_neural_voice: str = DEFAULT_LOCAL_NEURAL_VOICE
+    local_neural_temperature: float = 0.3
+    local_neural_eos_threshold: float = -6.0
 
     # ElevenLabs neural voice tuning (JARVIS calm & confident profile)
     elevenlabs_voice_id: str = field(default_factory=_default_voice_id)

@@ -826,6 +826,24 @@ class TelemetryHub:
             fallback_reason = self.tts.primary.get_public_status().get("key_status", "missing_api_key")
             self.tts.last_fallback_reason = fallback_reason
 
+        # Primary Local Neural TTS (Pocket-TTS Indonesian)
+        if hasattr(self.tts, "local_neural") and self.tts.local_neural.is_available():
+            self.set_transient_state("speaking", duration_sec=6.0, rms=0.40)
+            ok_ln = self.tts.local_neural.speak(phrase, wait=False, language=lang)
+            if ok_ln:
+                self.tts.last_used_engine = "local_neural"
+                return {
+                    "status": "success",
+                    "engine": "local_neural",
+                    "playback_mode": "host_pipewire",
+                    "text": phrase,
+                    "voice_name": getattr(self.tts.local_neural, "voice_name", "default"),
+                    "metrics": getattr(self.tts.local_neural, "_last_metrics", {}),
+                }
+            fallback_reason = getattr(self.tts.local_neural, "_last_error", None) or "local_neural_failed"
+            self.tts.last_fallback_reason = fallback_reason
+            voice_logger.tts_fallback("local_neural", "speech_dispatcher", reason=fallback_reason)
+
         # Automatic Fallback to Speech Dispatcher (spd-say) on host speakers
         est_dur = max(1.8, min(14.0, len(phrase) / 14.0))
         self.set_transient_state("speaking", duration_sec=est_dur, rms=0.35)
@@ -955,6 +973,8 @@ class TelemetryHub:
         # Re-sync config instance
         self.config = VoiceConfig()
         self.tts.config = self.config
+        if hasattr(self.tts, "local_neural"):
+            self.tts.local_neural.config = self.config
         self.tts.primary.config = self.config
         self.tts.fallback.config = self.config
 
@@ -1180,7 +1200,27 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/voice/voices":
-            self._send_json(self.hub.tts.primary.list_available_voices())
+            el_voices = self.hub.tts.primary.list_available_voices()
+            ln_avail = getattr(self.hub.tts.local_neural, "is_available", lambda: False)() if hasattr(self.hub.tts, "local_neural") else False
+            voices_payload = {
+                "status": "success",
+                "active_engine": self.hub.tts.get_status().get("active_engine"),
+                "preferred_engine": self.hub.tts._preferred_engine(),
+                "local_neural": {
+                    "available": ln_avail,
+                    "model": "pocket-tts-indonesian-6l",
+                    "voices": [
+                        {"id": "common_voice_id_19961910", "name": "Indonesian Male (Balanced, JARVIS)", "gender": "male", "lang": "id"},
+                        {"id": "common_voice_id_20954552", "name": "Indonesian Female (Warm)", "gender": "female", "lang": "id"},
+                        {"id": "common_voice_id_20954811", "name": "Indonesian Male (Clear)", "gender": "male", "lang": "id"},
+                        {"id": "common_voice_id_22918082", "name": "Indonesian Female (Expressive)", "gender": "female", "lang": "id"},
+                    ],
+                },
+                "elevenlabs": el_voices,
+            }
+            if isinstance(el_voices, list):
+                voices_payload["voices"] = el_voices
+            self._send_json(voices_payload)
             return
 
         if route.startswith("/api/voice/stream/"):
