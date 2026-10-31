@@ -19,11 +19,17 @@ from maverick.desktop.awareness import get_running_authorized_apps
 from maverick.desktop.launcher import check_app_status, get_running_pids, launch_app, list_all_apps_status
 
 
-class ToolRisk(Enum):
-    """Tool execution risk classifications."""
+class ToolRisk(str, Enum):
+    """Tool execution risk classifications supporting 5-tier taxonomy with legacy aliases."""
     READ_ONLY = "read_only"          # Safe, queries information without state alteration
-    CONSEQUENTIAL = "consequential"  # Modifies state (e.g. opens application, changes volume)
-    CRITICAL = "critical"            # High consequence, strictly requires explicit human confirmation
+    REVERSIBLE = "reversible"        # Safe modifications: temp files, moving cursor, launching approved apps
+    MODERATE_RISK = "moderate_risk"  # Workspace edits, non-critical settings
+    HIGH_RISK = "high_risk"          # Overwriting files, sending communications, external network ops
+    DESTRUCTIVE = "destructive"      # Deleting files, modifying permissions/auth, format, sudo/root ops
+
+    # Backward compatibility aliases
+    CONSEQUENTIAL = "consequential"  # Maps to MODERATE_RISK / REVERSIBLE
+    CRITICAL = "critical"            # Maps to HIGH_RISK / DESTRUCTIVE
 
 
 @dataclass
@@ -198,6 +204,13 @@ class ToolRegistry:
         self.register(ToolDefinition(
             name="system_telemetry",
             description="Query live CPU utilization, available RAM, swap usage, and battery power status.",
+            parameters_schema={"type": "object", "properties": {}},
+            risk=ToolRisk.READ_ONLY,
+            handler=self._tool_system_telemetry,
+        ))
+        self.register(ToolDefinition(
+            name="system_status",
+            description="Query live system telemetry and status (alias for system_telemetry).",
             parameters_schema={"type": "object", "properties": {}},
             risk=ToolRisk.READ_ONLY,
             handler=self._tool_system_telemetry,

@@ -246,6 +246,12 @@ class TelemetryHub:
         self.conversations = ConversationStore()
         self.memory = ContextMemory()
         self.planner = TaskPlanner(memory=self.memory)
+        from maverick.agent.orchestrator import MavenAgentCore
+        self.agent_core = MavenAgentCore(
+            memory=self.memory,
+            tool_registry=self.planner.tools,
+            planner=self.planner,
+        )
         self.active_plan: Optional[TaskPlan] = None
         self.vision_controller: VisionController = self.controller.vision or VisionController()
         from maverick.computer_use.agent import AutonomousComputerUseAgent
@@ -692,6 +698,7 @@ class TelemetryHub:
             "intelligence": {
                 "active_plan": self.active_plan.to_dict() if self.active_plan else None,
                 "recent_memories": self.memory.list_all(limit=6),
+                "agent_core": self.agent_core.get_telemetry(),
             },
             "vision": self.vision_controller.get_status(),
             "computer_use": self.computer_use_agent.get_telemetry(),
@@ -1093,45 +1100,29 @@ class TelemetryHub:
         }
 
     def submit_intelligence_plan(self, instruction: str) -> Dict[str, Any]:
-        plan = self.planner.plan(instruction)
-        self.active_plan = plan
-        exec_res = self.planner.execute_plan(plan)
+        res = self.agent_core.process_instruction(instruction)
+        self.active_plan = self.agent_core.active_plan
         self.notify_change()
         return {
             "status": "success",
-            "execution": exec_res,
-            "plan": plan.to_dict(),
+            "agent_response": res,
+            "execution": res.get("execution", {}),
+            "plan": self.active_plan.to_dict() if self.active_plan else res.get("plan"),
+            "intent": res.get("intent"),
+            "elapsed_ms": res.get("elapsed_ms", 0),
         }
 
     def approve_intelligence_step(self, step_id: Optional[int] = None) -> Dict[str, Any]:
-        if not self.active_plan:
-            return {"status": "error", "message": "No active task plan to approve."}
-        target_step = step_id or self.active_plan.awaiting_step_id
-        if not target_step:
-            return {"status": "error", "message": "No step is currently awaiting approval."}
-        exec_res = self.planner.execute_plan(self.active_plan, approved_step_id=target_step)
+        res = self.agent_core.approve_step(step_id=step_id)
+        self.active_plan = self.agent_core.active_plan
         self.notify_change()
-        return {
-            "status": "success",
-            "execution": exec_res,
-            "plan": self.active_plan.to_dict(),
-        }
+        return res
 
     def reject_intelligence_step(self, step_id: Optional[int] = None, reason: str = "Rejected by user") -> Dict[str, Any]:
-        if not self.active_plan:
-            return {"status": "error", "message": "No active task plan to reject."}
-        target_step = step_id or self.active_plan.awaiting_step_id
-        for s in self.active_plan.steps:
-            if s.step_id == target_step:
-                s.status = "failed"
-                s.result = {"status": "rejected", "message": reason}
-        self.active_plan.status = TaskStatus.FAILED
-        self.active_plan.awaiting_step_id = None
+        res = self.agent_core.reject_step(step_id=step_id, reason=reason)
+        self.active_plan = self.agent_core.active_plan
         self.notify_change()
-        return {
-            "status": "success",
-            "plan": self.active_plan.to_dict(),
-        }
+        return res
 
     def store_memory(self, content: str, category: str = "general", tags: Optional[List[str]] = None) -> Dict[str, Any]:
         mem = self.memory.store(content=content, category=category, tags=tags or [])
@@ -1198,9 +1189,24 @@ class TelemetryHub:
         self.notify_change()
         return {"status": "success", "calibration": self.vision_controller.engine.calibrator.to_dict()}
 
+    def pause_active_task(self) -> Dict[str, Any]:
+        """Pause the currently running intelligence task."""
+        res = self.agent_core.pause_task()
+        self.notify_change()
+        return res
+
+    def resume_active_task(self) -> Dict[str, Any]:
+        """Resume a paused intelligence task."""
+        res = self.agent_core.resume_task()
+        self.notify_change()
+        return res
+
     def cancel_active_task(self) -> Dict[str, Any]:
         """Cancel the currently active planning or computer-use task."""
         cancelled_items = []
+        ac_res = self.agent_core.cancel_task()
+        if ac_res.get("status") == "success":
+            cancelled_items.append("agent_core")
         if self.active_plan and self.active_plan.status in (TaskStatus.IN_PROGRESS, TaskStatus.WAITING_APPROVAL):
             self.active_plan.status = TaskStatus.FAILED
             for s in self.active_plan.steps:
@@ -1219,6 +1225,7 @@ class TelemetryHub:
 
     def emergency_stop_all(self) -> Dict[str, Any]:
         """Immediately disengage vision, pause computer-use, stop TTS, and halt active tasks."""
+        self.agent_core.emergency_stop()
         v_res = self.vision_emergency_stop()
         cu_res = self.computer_use_agent.emergency_stop()
         self.tts.stop()
@@ -1775,6 +1782,23 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/intelligence/cancel":
             res = self.hub.cancel_active_task()
             self._send_json(res)
+            return
+
+        if route == "/api/intelligence/pause":
+            res = self.hub.pause_active_task()
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/resume":
+            res = self.hub.resume_active_task()
+            self._send_json(res)
+            return
+
+        if route == "/api/intelligence/memory/wipe":
+            cat = body.get("category")
+            count = self.hub.memory.wipe_all(category=cat)
+            self.hub.notify_change()
+            self._send_json({"status": "success", "wiped_count": count})
             return
 
         if route == "/api/vision/test-camera":

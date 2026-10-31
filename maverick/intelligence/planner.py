@@ -29,6 +29,8 @@ class TaskStatus(Enum):
     FAILED = "failed"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
+    IN_PROGRESS = RUNNING
     PENDING = "pending"  # Backward compatibility alias
 
 
@@ -47,7 +49,10 @@ class TaskStep:
     elapsed_ms: float = 0.0
     verification_criteria: Optional[Dict[str, Any]] = None
     rollback_action: Optional[Dict[str, Any]] = None
-    retries_left: int = 0
+    max_retries: int = 2
+    retries_left: int = 2
+    timeout_sec: float = 30.0
+    risk_tier: str = "moderate_risk"
 
 
 @dataclass
@@ -57,13 +62,52 @@ class TaskPlan:
     goal: str
     steps: List[TaskStep]
     status: TaskStatus = TaskStatus.PENDING
+    description: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     awaiting_step_id: Optional[int] = None
     final_summary: Optional[str] = None
+    progress: float = 0.0
+    timeout_sec: float = 300.0
+    retry_policy: Dict[str, Any] = field(default_factory=lambda: {"max_retries": 2, "backoff_sec": 0.5})
+    error_details: Optional[str] = None
+    is_paused: bool = False
+
+    def calculate_progress(self) -> float:
+        if not self.steps:
+            return 100.0 if self.status == TaskStatus.COMPLETED else 0.0
+        done = sum(1 for s in self.steps if s.status in ("completed", "skipped"))
+        self.progress = round((done / len(self.steps)) * 100.0, 1)
+        return self.progress
+
+    def pause(self) -> bool:
+        if self.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            return False
+        self.is_paused = True
+        self.status = TaskStatus.PAUSED
+        return True
+
+    def resume(self) -> bool:
+        if not self.is_paused:
+            return False
+        self.is_paused = False
+        self.status = TaskStatus.RUNNING
+        return True
+        self.status = TaskStatus.RUNNING
+        return True
+
+    def cancel(self, reason: str = "User cancelled task") -> None:
+        self.status = TaskStatus.CANCELLED
+        self.error_details = reason
+        self.completed_at = time.time()
+        for s in self.steps:
+            if s.status in ("pending", "running", "awaiting_approval"):
+                s.status = "cancelled"
+                s.error = reason
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert plan to serializable dictionary for API and Control Center HUD."""
+        self.calculate_progress()
         d = asdict(self)
         d["status"] = self.status.value
         return d
@@ -86,7 +130,10 @@ class TaskPlan:
                 elapsed_ms=s.get("elapsed_ms", 0.0),
                 verification_criteria=s.get("verification_criteria"),
                 rollback_action=s.get("rollback_action"),
-                retries_left=s.get("retries_left", 0),
+                max_retries=s.get("max_retries", 2),
+                retries_left=s.get("retries_left", 2),
+                timeout_sec=s.get("timeout_sec", 30.0),
+                risk_tier=s.get("risk_tier", "moderate_risk"),
             ))
         raw_status = data.get("status", "pending")
         try:
@@ -99,10 +146,16 @@ class TaskPlan:
             goal=data.get("goal", ""),
             steps=steps,
             status=status,
+            description=data.get("description"),
             created_at=data.get("created_at", time.time()),
             completed_at=data.get("completed_at"),
             awaiting_step_id=data.get("awaiting_step_id"),
             final_summary=data.get("final_summary"),
+            progress=float(data.get("progress", 0.0)),
+            timeout_sec=float(data.get("timeout_sec", 300.0)),
+            retry_policy=data.get("retry_policy", {"max_retries": 2, "backoff_sec": 0.5}),
+            error_details=data.get("error_details"),
+            is_paused=bool(data.get("is_paused", False)),
         )
 
 
@@ -117,9 +170,10 @@ class TaskPlanner:
         tool_registry: Optional[ToolRegistry] = None,
         memory: Optional[ContextMemory] = None,
         task_store: Optional[TaskStore] = None,
+        tools: Optional[ToolRegistry] = None,
     ):
         self.memory = memory or ContextMemory()
-        self.tools = tool_registry or ToolRegistry(memory_engine=self.memory)
+        self.tools = tool_registry or tools or ToolRegistry(memory_engine=self.memory)
         self.store = task_store or TaskStore()
         self._active_plans: Dict[str, TaskPlan] = {}
 
