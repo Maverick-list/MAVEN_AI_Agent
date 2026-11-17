@@ -365,76 +365,77 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(_build_status_dict()).encode("utf-8"))
 
     def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path.rstrip("/")
-        content_len = int(self.headers.get("Content-Length", 0))
-        body = {}
-        if content_len > 0:
-            raw = self.rfile.read(content_len).decode("utf-8", errors="ignore")
-            try:
-                body = json.loads(raw)
-            except Exception:
-                body = {}
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            matched_path = self.headers.get("x-matched-path", "")
+            path = (matched_path or parsed.path).rstrip("/")
+            if not path:
+                path = "/api/command"
 
-        if path == "/api/command":
-            text = str(body.get("text", "")).strip()
-            res = _process_command(text)
+            content_len = int(self.headers.get("content-length") or self.headers.get("Content-Length") or 0)
+            body = {}
+            if content_len > 0:
+                raw = self.rfile.read(content_len).decode("utf-8", errors="ignore")
+                try:
+                    body = json.loads(raw)
+                except Exception as je:
+                    body = {"raw": raw, "json_err": str(je)}
+
+            if path.endswith("/command") or path == "/api/command":
+                text = str(body.get("text", "")).strip()
+                res = _process_command(text)
+                self._set_headers(200, "application/json")
+                self.wfile.write(json.dumps(res).encode("utf-8"))
+                return
+
+            if path.endswith("/intelligence/plan") or path == "/api/intelligence/plan":
+                global _ACTIVE_PLAN
+                instruction = str(body.get("instruction", "") or body.get("text", "") or "Prepare workspace").strip()
+                _ACTIVE_PLAN = {
+                    "plan_id": f"plan_{int(time.time())}",
+                    "goal": instruction.upper(),
+                    "status": "in_progress",
+                    "created_at": time.time(),
+                    "progress": 66.7,
+                    "steps": [
+                        {"step_id": 1, "description": "Inspect cloud container environment", "status": "completed", "elapsed_ms": 1.2},
+                        {"step_id": 2, "description": "Verify Google Gemini 2.5 Flash API connectivity", "status": "completed", "elapsed_ms": 142.5},
+                        {"step_id": 3, "description": f"Execute autonomous goal: '{instruction}'", "status": "awaiting_approval", "elapsed_ms": 0.0},
+                    ],
+                }
+                self._set_headers(200, "application/json")
+                self.wfile.write(json.dumps({"status": "success", "plan": _ACTIVE_PLAN}).encode("utf-8"))
+                return
+
+            if path.endswith("/intelligence/memory") or path == "/api/intelligence/memory":
+                global _MEMORIES
+                mem = {
+                    "id": f"mem_{int(time.time()*1000)}",
+                    "category": body.get("category", "general"),
+                    "content": body.get("content", ""),
+                    "tags": body.get("tags") or [],
+                    "created_at": time.time(),
+                }
+                _MEMORIES.append(mem)
+                self._set_headers(200, "application/json")
+                self.wfile.write(json.dumps({"status": "success", "memory": mem}).encode("utf-8"))
+                return
+
+            if path.endswith("/vision/mode/toggle") or path == "/api/vision/mode/toggle":
+                global _VISION_MODE
+                _VISION_MODE = "vision_active" if _VISION_MODE != "vision_active" else "normal"
+                self._set_headers(200, "application/json")
+                self.wfile.write(json.dumps({"status": "success", "current_mode": _VISION_MODE}).encode("utf-8"))
+                return
+
+            # Default fallback
             self._set_headers(200, "application/json")
-            self.wfile.write(json.dumps(res).encode("utf-8"))
-            return
-
-        if path == "/api/intelligence/plan":
-            global _ACTIVE_PLAN
-            instruction = str(body.get("instruction", "") or body.get("text", "") or "Prepare workspace").strip()
-            _ACTIVE_PLAN = {
-                "plan_id": f"plan_{int(time.time())}",
-                "goal": instruction.upper(),
-                "status": "in_progress",
-                "created_at": time.time(),
-                "progress": 66.7,
-                "steps": [
-                    {"step_id": 1, "description": "Inspect cloud container environment", "status": "completed", "elapsed_ms": 1.2},
-                    {"step_id": 2, "description": "Verify Google Gemini 2.5 Flash API connectivity", "status": "completed", "elapsed_ms": 142.5},
-                    {"step_id": 3, "description": f"Execute autonomous goal: '{instruction}'", "status": "awaiting_approval", "elapsed_ms": 0.0},
-                ],
-            }
-            self._set_headers(200, "application/json")
-            self.wfile.write(json.dumps({"status": "success", "plan": _ACTIVE_PLAN}).encode("utf-8"))
-            return
-
-        if path == "/api/intelligence/memory":
-            global _MEMORIES
-            mem = {
-                "id": f"mem_{int(time.time()*1000)}",
-                "category": body.get("category", "general"),
-                "content": body.get("content", ""),
-                "tags": body.get("tags") or [],
-                "created_at": time.time(),
-            }
-            _MEMORIES.append(mem)
-            self._set_headers(200, "application/json")
-            self.wfile.write(json.dumps({"status": "success", "memory": mem}).encode("utf-8"))
-            return
-
-        if path == "/api/intelligence/memory/delete":
-            target_id = body.get("id")
-            _MEMORIES = [m for m in _MEMORIES if m.get("id") != target_id]
-            self._set_headers(200, "application/json")
-            self.wfile.write(json.dumps({"status": "success", "deleted_id": target_id}).encode("utf-8"))
-            return
-
-        if path == "/api/vision/mode/toggle":
-            global _VISION_MODE
-            _VISION_MODE = "vision_active" if _VISION_MODE != "vision_active" else "normal"
-            self._set_headers(200, "application/json")
-            self.wfile.write(json.dumps({"status": "success", "current_mode": _VISION_MODE}).encode("utf-8"))
-            return
-
-        if path == "/api/voice/test":
-            self._set_headers(200, "application/json")
-            self.wfile.write(json.dumps({"status": "success", "message": "Voice test ok"}).encode("utf-8"))
-            return
-
-        # Default fallback
-        self._set_headers(200, "application/json")
-        self.wfile.write(json.dumps({"status": "success"}).encode("utf-8"))
+            self.wfile.write(json.dumps({
+                "status": "success",
+                "received_path": self.path,
+                "parsed_path": path,
+                "body_keys": list(body.keys()),
+            }).encode("utf-8"))
+        except Exception as ex:
+            self._set_headers(500, "application/json")
+            self.wfile.write(json.dumps({"status": "error", "error": str(ex)}).encode("utf-8"))
