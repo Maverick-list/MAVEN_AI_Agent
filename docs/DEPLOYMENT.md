@@ -91,3 +91,35 @@ python3 scripts/build_deb_package.py
 # Install generated package
 sudo dpkg -i dist/maven-jarvis_2.2.0_amd64.deb
 ```
+
+---
+
+## 4. Vercel Cloud Serverless Deployment (Online Server)
+
+MAVEN JARVIS provides an official online serverless deployment on Vercel, allowing anyone to access the Holographic Control Center, interact with the AI Gateway, and run task planning directly in any web browser without local installation.
+
+### 4.1 Production Endpoints
+- **Live Control Center Dashboard:** [https://maven-ai-agent.vercel.app](https://maven-ai-agent.vercel.app)
+- **Status Telemetry API:** `https://maven-ai-agent.vercel.app/api/status`
+- **Command & Dialogue API:** `POST https://maven-ai-agent.vercel.app/api/command`
+- **DAG Task Planner API:** `POST https://maven-ai-agent.vercel.app/api/intelligence/plan`
+- **Cognitive Memory API:** `GET / POST https://maven-ai-agent.vercel.app/api/intelligence/memory`
+
+### 4.2 Architecture
+```
+[Client / Browser]
+       │
+       ▼ (HTTPS / TLS 1.3)
+[Vercel Global Edge CDN]
+       ├──> Static Assets (/static/*, /index.html) -> public/
+       └──> API Routes (/api/*) -> api/index.py (Python Serverless Function)
+                                         │
+                                         ▼
+                            Google Gemini 2.5 Flash API
+```
+
+### 4.3 Environment Variables
+When deploying to Vercel, the following optional environment variables can be set in the Vercel Project Settings:
+- `GEMINI_API_KEY`: API key for Google Gemini 2.5 Flash cognitive reasoning.
+- `ELEVENLABS_API_KEY`: API key for ElevenLabs neural voice synthesis.
+

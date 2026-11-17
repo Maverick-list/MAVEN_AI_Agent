@@ -16,12 +16,13 @@
 [![GitHub License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue?style=flat-square&logo=python)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Linux%20(Ubuntu%20%7C%20Debian%20%7C%20Wayland%20%7C%20X11)-orange?style=flat-square&logo=linux)](https://ubuntu.com)
+[![Vercel Deployment](https://img.shields.io/badge/Vercel-Online%20Live-black?style=flat-square&logo=vercel)](https://maven-ai-agent.vercel.app)
 [![Voice Latency](https://img.shields.io/badge/voice%20TTFT-%3C%201.8s-success?style=flat-square&logo=speedtest)](docs/TESTING.md)
 [![Action Dispatch](https://img.shields.io/badge/OS%20Actions-217ms-brightgreen?style=flat-square)](docs/TESTING.md)
 [![Tests Passing](https://img.shields.io/badge/tests-64%2F64%20passed-brightgreen?style=flat-square)](docs/TESTING.md)
 [![Security Gate](https://img.shields.io/badge/security-5--Tier%20Gated%20Policy-blueviolet?style=flat-square)](docs/SECURITY.md)
 
-[**Features**](#-key-features--capabilities) • [**Architecture**](#-system-architecture) • [**Screenshots**](#-visual-previews--screenshots) • [**Installation**](#-quick-start--installation) • [**Documentation**](#-comprehensive-documentation-system) • [**Development History**](development/README.md)
+[**🌐 Live Online Demo**](https://maven-ai-agent.vercel.app) • [**Features**](#-key-features--capabilities) • [**Architecture**](#-system-architecture) • [**Screenshots**](#-visual-previews--screenshots) • [**Installation**](#-quick-start--installation) • [**Documentation**](#-comprehensive-documentation-system) • [**Development History**](development/README.md)
 
 ---
 
