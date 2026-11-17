@@ -325,21 +325,21 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if not path:
-            path = "/"
+        query = urllib.parse.parse_qs(parsed.query)
+        action = query.get("action", [""])[0]
 
         # API Routes
-        if path == "/api/status":
+        if action == "status" or path.endswith("/status") or path == "/api/status":
             self._set_headers(200, "application/json")
             self.wfile.write(json.dumps(_build_status_dict()).encode("utf-8"))
             return
 
-        if path == "/api/intelligence/memory":
+        if action == "memory" or path.endswith("/memory") or path == "/api/intelligence/memory":
             self._set_headers(200, "application/json")
             self.wfile.write(json.dumps({"status": "success", "memories": _MEMORIES}).encode("utf-8"))
             return
 
-        if path == "/api/events":
+        if action == "events" or path.endswith("/events") or path == "/api/events":
             self._set_headers(200, "text/event-stream")
             msg = f"event: telemetry\ndata: {json.dumps(_build_status_dict())}\n\n"
             self.wfile.write(msg.encode("utf-8"))
@@ -347,7 +347,7 @@ class handler(BaseHTTPRequestHandler):
 
         # Static Files & Root
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if path == "/":
+        if not path or path == "/" or path == "/api/index.py":
             file_path = os.path.join(base_dir, "public", "index.html")
         else:
             rel = path.lstrip("/")
@@ -360,17 +360,16 @@ class handler(BaseHTTPRequestHandler):
                 self.wfile.write(f.read())
             return
 
-        # Default fallback: serve status or 404
+        # Default fallback
         self._set_headers(200, "application/json")
         self.wfile.write(json.dumps(_build_status_dict()).encode("utf-8"))
 
     def do_POST(self):
         try:
             parsed = urllib.parse.urlparse(self.path)
-            matched_path = self.headers.get("x-matched-path", "")
-            path = (matched_path or parsed.path).rstrip("/")
-            if not path:
-                path = "/api/command"
+            path = parsed.path.rstrip("/")
+            query = urllib.parse.parse_qs(parsed.query)
+            action = query.get("action", [""])[0]
 
             content_len = int(self.headers.get("content-length") or self.headers.get("Content-Length") or 0)
             body = {}
@@ -381,14 +380,16 @@ class handler(BaseHTTPRequestHandler):
                 except Exception as je:
                     body = {"raw": raw, "json_err": str(je)}
 
-            if path.endswith("/command") or path == "/api/command":
+            # Command execution
+            if action == "command" or "text" in body or path.endswith("/command"):
                 text = str(body.get("text", "")).strip()
                 res = _process_command(text)
                 self._set_headers(200, "application/json")
                 self.wfile.write(json.dumps(res).encode("utf-8"))
                 return
 
-            if path.endswith("/intelligence/plan") or path == "/api/intelligence/plan":
+            # Task Plan
+            if action == "plan" or "instruction" in body or path.endswith("/plan"):
                 global _ACTIVE_PLAN
                 instruction = str(body.get("instruction", "") or body.get("text", "") or "Prepare workspace").strip()
                 _ACTIVE_PLAN = {
@@ -407,7 +408,8 @@ class handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"status": "success", "plan": _ACTIVE_PLAN}).encode("utf-8"))
                 return
 
-            if path.endswith("/intelligence/memory") or path == "/api/intelligence/memory":
+            # Cognitive Memory
+            if action == "memory" or "content" in body or path.endswith("/memory"):
                 global _MEMORIES
                 mem = {
                     "id": f"mem_{int(time.time()*1000)}",
@@ -421,20 +423,34 @@ class handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"status": "success", "memory": mem}).encode("utf-8"))
                 return
 
-            if path.endswith("/vision/mode/toggle") or path == "/api/vision/mode/toggle":
+            # Delete Memory
+            if action == "memory_delete" or path.endswith("/memory/delete"):
+                target_id = body.get("id")
+                _MEMORIES = [m for m in _MEMORIES if m.get("id") != target_id]
+                self._set_headers(200, "application/json")
+                self.wfile.write(json.dumps({"status": "success", "deleted_id": target_id}).encode("utf-8"))
+                return
+
+            # Toggle Vision Mode
+            if action == "vision_toggle" or path.endswith("/vision/mode/toggle"):
                 global _VISION_MODE
                 _VISION_MODE = "vision_active" if _VISION_MODE != "vision_active" else "normal"
                 self._set_headers(200, "application/json")
                 self.wfile.write(json.dumps({"status": "success", "current_mode": _VISION_MODE}).encode("utf-8"))
                 return
 
-            # Default fallback
+            # Test Voice
+            if action == "voice_test" or path.endswith("/voice/test"):
+                self._set_headers(200, "application/json")
+                self.wfile.write(json.dumps({"status": "success", "message": "Voice test ok"}).encode("utf-8"))
+                return
+
+            # Fallback
             self._set_headers(200, "application/json")
             self.wfile.write(json.dumps({
                 "status": "success",
                 "received_path": self.path,
-                "parsed_path": path,
-                "body_keys": list(body.keys()),
+                "action": action,
             }).encode("utf-8"))
         except Exception as ex:
             self._set_headers(500, "application/json")

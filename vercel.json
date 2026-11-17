@@ -1,7 +1,15 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/api/command", "destination": "/api/index.py?action=command" },
+    { "source": "/api/status", "destination": "/api/index.py?action=status" },
+    { "source": "/api/events", "destination": "/api/index.py?action=events" },
+    { "source": "/api/intelligence/plan", "destination": "/api/index.py?action=plan" },
+    { "source": "/api/intelligence/memory", "destination": "/api/index.py?action=memory" },
+    { "source": "/api/intelligence/memory/delete", "destination": "/api/index.py?action=memory_delete" },
+    { "source": "/api/vision/mode/toggle", "destination": "/api/index.py?action=vision_toggle" },
+    { "source": "/api/voice/test", "destination": "/api/index.py?action=voice_test" },
+    { "source": "/api/(.*)", "destination": "/api/index.py?action=$1" },
     { "source": "/static/(.*)", "destination": "/public/static/$1" },
     { "source": "/(.*)", "destination": "/api/index.py" }
   ]
