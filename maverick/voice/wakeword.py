@@ -51,10 +51,10 @@ class LocalKeywordWakeWordDetector(WakeWordDetector):
     )
     # Place neutral acoustic tokens before wake proper nouns so Whisper never
     # prompt-echoes "Hey Maven," during ambient music or non-speech bursts.
-    PROMPT_PASS1 = "Vocabulary: music, speech, silence, noise, haven, modern, mayhem, Maven, Jarvis."
-    PROMPT_PASS2 = "memory, modern, method, motor, haven, morning, music, meeting, weather, question, report, project"
+    PROMPT_PASS1 = "Maven, Jarvis, Hey Maven, Halo Maven, speech."
+    PROMPT_PASS2 = "Maven, Jarvis, speech, question, report."
     DISTRACTOR_REGEX = re.compile(
-        r"(\b(?:memory|modern|method|motor|haven|shaven|mayhem|marvin|bacon|morning|music|meeting)\b|\[music\]|\(music\)|♪)",
+        r"(\b(?:shaven|mayhem|marvin|bacon)\b|\[music\]|\(music\)|♪)",
         re.IGNORECASE,
     )
 

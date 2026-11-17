@@ -263,6 +263,26 @@ class TelemetryHub:
         self.memory_manager.register_component("computer_use", self.computer_use_agent)
         self._daemon_last_trigger: str = "wake_word"
 
+        # Proactive memory conservation daemon thread
+        def _memory_guard_worker():
+            while True:
+                time.sleep(30)
+                try:
+                    self.memory_manager.enforce_memory_bounds(force=True)
+                except Exception:
+                    pass
+        threading.Thread(target=_memory_guard_worker, name="maven-memory-guard", daemon=True).start()
+
+        # Auto-start voice daemon on boot if not already running
+        def _auto_start_voice():
+            time.sleep(1.5)
+            if not get_voice_process_pid():
+                try:
+                    cmd_start(argparse.Namespace(ui=False, daemon=True))
+                except Exception:
+                    pass
+        threading.Thread(target=_auto_start_voice, name="maven-voice-autostart", daemon=True).start()
+
         self._lock = threading.Lock()
         self._snapshot_lock = threading.RLock()
         self._cached_snapshot: Optional[Dict[str, Any]] = None
@@ -524,6 +544,17 @@ class TelemetryHub:
             pass
         return result
 
+    @staticmethod
+    def _get_window_control_state() -> Dict[str, Any]:
+        state_file = os.path.expanduser("~/.local/state/maverick/window_control.json")
+        if os.path.isfile(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {"action": "none", "source": "none", "timestamp": 0.0, "seq": 0}
+
     def get_snapshot(self) -> Dict[str, Any]:
         """Collect complete real-time operational snapshot with zero simulated status."""
         with self._snapshot_lock:
@@ -645,6 +676,7 @@ class TelemetryHub:
                     "clap_detection_enabled": getattr(self.config, "enable_clap_detection", True),
                     "last_trigger_source": self._daemon_last_trigger,
                 },
+                "window_control": self._get_window_control_state(),
             },
             "system": {
                 "os": self._cached_os_info,
@@ -1646,6 +1678,27 @@ class ControlCenterRequestHandler(BaseHTTPRequestHandler):
             self.hub.tts.stop()
             self.hub.set_transient_state(None)
             self._send_json({"status": "success", "action": "tts_stopped"})
+            return
+
+        if route in ("/api/assistant/abort", "/api/system/window/close"):
+            self.hub.tts.stop()
+            self.hub.set_transient_state(None)
+            state_file = os.path.expanduser("~/.local/state/maverick/window_control.json")
+            try:
+                now = time.time()
+                seq = int(now * 1000)
+                tmp_file = f"{state_file}.tmp.{os.getpid()}"
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "action": "close",
+                        "source": "ui_close",
+                        "timestamp": now,
+                        "seq": seq,
+                    }, f)
+                os.replace(tmp_file, state_file)
+            except Exception:
+                pass
+            self._send_json({"status": "success", "action": "assistant_aborted"})
             return
 
         if route == "/api/voice/settings":

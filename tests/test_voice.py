@@ -25,6 +25,7 @@ class TestVoiceSubsystem(unittest.TestCase):
 
     def setUp(self):
         self.config = VoiceConfig()
+        self.config.tts_default_language = "en"
 
     # 1. Microphone Detection
     def test_microphone_detection(self):

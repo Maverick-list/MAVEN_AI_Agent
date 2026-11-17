@@ -160,10 +160,15 @@ class VoiceDaemon:
 
                         # Speech-to-Text invocation
                         t_stt = time.perf_counter()
-                        voice_logger.stt_start(len(utterance))
+
+                        # Respect user configured language (default: auto, or explicitly id/en)
+                        from maverick.voice.config import load_voice_settings
+                        saved_v = load_voice_settings()
+                        active_lang = saved_v.get("stt_language") or getattr(self.config, "stt_language", "id")
+                        voice_logger.stt_start(len(utterance), language=active_lang)
 
                         try:
-                            transcript = self.controller.stt.transcribe(utterance)
+                            transcript = self.controller.stt.transcribe(utterance, language=active_lang)
                         except Exception as exc:
                             voice_logger.stt_failure(str(exc))
                             self.session.rearm()
@@ -289,11 +294,30 @@ class VoiceDaemon:
                             self.session.audio.flush()
                         self.session.rearm()
 
+                        # Immediate memory trim after turn completion
+                        import gc
+                        gc.collect()
+                        try:
+                            import ctypes
+                            ctypes.CDLL("libc.so.6").malloc_trim(0)
+                        except Exception:
+                            pass
+
                 except Exception as iter_err:
                     voice_logger.exception("VoiceDaemon.step", iter_err)
                     if hasattr(self.session.audio, "flush"):
                         self.session.audio.flush()
                     self.session.rearm()
+
+                # Periodic proactive heap trim every ~30 seconds of ambient listening
+                if self._frames_processed % 1000 == 0:
+                    import gc
+                    gc.collect()
+                    try:
+                        import ctypes
+                        ctypes.CDLL("libc.so.6").malloc_trim(0)
+                    except Exception:
+                        pass
 
                 # Sleep small delta to yield CPU during IDLE
                 time.sleep(0.01)

@@ -111,6 +111,37 @@ class TestClapDetector(unittest.TestCase):
         self.detector.process_frame(clap)
         self.assertGreater(self.detector._first_clap_time, 0.0)
 
+    def test_single_and_dual_clap_event_discrimination(self):
+        """Verify process_event returns 'single' on timeout and 'dual' on two claps."""
+        from maverick.voice.clap import ClapResult
+
+        # 1. Single Clap: first clap, then silence past max_interval
+        clap = generate_clap_frame(0.85)
+        decay_silence = b"\x00" * 1024
+
+        ev1 = self.detector.process_event(clap)
+        self.assertEqual(ev1, ClapResult.NONE)
+
+        # Allow decay
+        self.detector.process_event(decay_silence)
+        time.sleep(0.65)  # exceeds max_interval (0.60)
+        ev2 = self.detector.process_event(decay_silence)
+        self.assertEqual(ev2, ClapResult.SINGLE, "Single clap must emit SINGLE event after timeout")
+
+        # Wait past cooldown
+        time.sleep(0.55)
+
+        # 2. Dual Clap: first clap, decay, second clap
+        ev3 = self.detector.process_event(clap)
+        self.assertEqual(ev3, ClapResult.NONE)
+
+        self.detector.process_event(decay_silence)
+        time.sleep(0.18)
+        self.detector.process_event(decay_silence)
+
+        ev4 = self.detector.process_event(clap)
+        self.assertEqual(ev4, ClapResult.DUAL, "Dual clap must emit DUAL event upon second clap")
+
 
 if __name__ == "__main__":
     unittest.main()

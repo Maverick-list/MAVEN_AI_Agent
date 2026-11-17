@@ -285,6 +285,8 @@ if _HAS_GTK_WEBKIT:
             self.is_connected = False
             self.active_mode = "NORMAL"
             self._poller_active = True
+            self._user_close_ts = 0.0
+            self._last_handled_window_seq = 0
 
             self.set_default_size(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
             self.set_size_request(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
@@ -305,6 +307,7 @@ if _HAS_GTK_WEBKIT:
             # Initial status check and periodic background poller
             self._trigger_health_poll()
             GLib.timeout_add_seconds(2, self._trigger_health_poll)
+            GLib.timeout_add(60, self._check_window_control)
 
         def _setup_icon(self) -> None:
             """Configure application window icon."""
@@ -496,17 +499,84 @@ if _HAS_GTK_WEBKIT:
             return False
 
         def _on_delete_event(self, widget, event) -> bool:
-            """Intercept close button: hide to background to keep assistant alive."""
+            """Intercept close button: hide window and ensure it stays closed until next explicit dual-clap."""
             self._hide_to_background()
-            return True  # Prevent window destruction
+            return True  # Prevent window destruction, keep assistant alive in background
 
         def _hide_to_background(self) -> None:
-            """Hide window and notify user that Maven remains active in background."""
+            """Hide window, register user suppression timestamp, and abort any active session turn."""
+            self._user_close_ts = time.time()
             self.hide()
-            send_desktop_notification(
-                "Maven JARVIS Active",
-                "Running in the background. Say 'Maven' or click launcher to reopen.",
-            )
+
+            # Record user close in local state file so background listeners know
+            state_file = os.path.expanduser("~/.local/state/maverick/window_control.json")
+            try:
+                seq = int(self._user_close_ts * 1000)
+                self._last_handled_window_seq = seq
+                tmp_file = f"{state_file}.tmp.{os.getpid()}"
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "action": "close",
+                        "source": "ui_close",
+                        "timestamp": self._user_close_ts,
+                        "seq": seq,
+                    }, f)
+                os.replace(tmp_file, state_file)
+            except Exception:
+                pass
+
+            # Abort any active speech or listening in backend
+            def _abort():
+                for ep in ("/api/assistant/abort", "/api/voice/stop"):
+                    try:
+                        req = urllib.request.Request(
+                            f"{self.backend_url}{ep}",
+                            data=b"{}",
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        urllib.request.urlopen(req, timeout=1.0)
+                    except Exception:
+                        pass
+            threading.Thread(target=_abort, daemon=True).start()
+
+        def _check_window_control(self) -> bool:
+            """Fast local IPC monitor for window open/close actions (single/dual claps, wake-word)."""
+            if not self._poller_active:
+                return False
+
+            state_file = os.path.expanduser("~/.local/state/maverick/window_control.json")
+            if not os.path.isfile(state_file):
+                return True
+
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                seq = int(data.get("seq", 0))
+                if seq <= self._last_handled_window_seq:
+                    return True
+
+                self._last_handled_window_seq = seq
+                action = str(data.get("action", ""))
+                ts = float(data.get("timestamp", 0.0))
+                source = str(data.get("source", ""))
+
+                # If action is 'close', execute immediate synchronous hide
+                if action == "close":
+                    self.hide()
+                    return True
+
+                # If action is 'open', check user suppression watermark
+                if action == "open":
+                    if ts <= self._user_close_ts:
+                        return True
+                    self._user_close_ts = 0.0
+                    self._restore_and_present()
+            except Exception:
+                pass
+
+            return True
 
         def _on_status_clicked(self, widget) -> None:
             """Manual status probe on click."""
@@ -569,6 +639,12 @@ if _HAS_GTK_WEBKIT:
             except Exception:
                 pass
             GLib.idle_add(self._update_ui_state, False, "NORMAL")
+
+        def _restore_and_present(self) -> None:
+            """Unhide window and present it to user upon wake/clap trigger."""
+            self.show_all()
+            self.deiconify()
+            self.present()
 
         def _update_ui_state(self, is_connected: bool, mode: str) -> None:
             """Update status badge and mode button on the GTK main loop."""

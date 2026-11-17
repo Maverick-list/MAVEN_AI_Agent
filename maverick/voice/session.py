@@ -1,12 +1,14 @@
 """Maverick DevOS - Voice Interaction Session & Finite State Machine."""
 
 from enum import Enum
+import json
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from maverick.voice.audio import AudioCapture, calculate_rms
-from maverick.voice.clap import DualClapDetector
+from maverick.voice.clap import DualClapDetector, ClapResult
 from maverick.voice.config import VoiceConfig
 from maverick.voice.observability import voice_logger
 from maverick.voice.tts import TTSProvider, SpeechDispatcherTTS, create_tts_provider
@@ -122,10 +124,31 @@ class VoiceSession:
         self._last_speech_time = self._listen_start_time
         self._transition_to(VoiceState.LISTENING)
 
+    def _emit_window_action(self, action: str, source: str) -> None:
+        """Persist window control action to local state for instantaneous desktop GUI sync."""
+        try:
+            from maverick.launcher import ensure_state_dir, STATE_DIR
+            ensure_state_dir()
+            state_file = os.path.join(STATE_DIR, "window_control.json")
+            now = time.time()
+            seq = int(now * 1000)
+            tmp_file = f"{state_file}.tmp.{os.getpid()}"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "action": action,
+                    "source": source,
+                    "timestamp": now,
+                    "seq": seq,
+                }, f)
+            os.replace(tmp_file, state_file)
+        except Exception as exc:
+            voice_logger.warning(f"Failed to persist window action: {exc}")
+
     def trigger_wake_word(self, source: str = "ui") -> None:
         """Programmatically trigger wake-word state (e.g. from UI keypress or clap)."""
         if self._state in (VoiceState.IDLE, VoiceState.ERROR):
             self.last_trigger_source = source
+            self._emit_window_action("open", source=source)
             self._transition_to(VoiceState.WAKE_WORD_DETECTED)
             self._start_listening()
 
@@ -158,6 +181,16 @@ class VoiceSession:
             # Barge-in detection: inspect incoming microphone audio for user speech bursts
             chunk = self.audio.read_chunk()
             if chunk:
+                # Check for single-clap to immediately dismiss / silence assistant
+                if getattr(self, "clap_detector", None) and hasattr(self.clap_detector, "process_event"):
+                    c_event = self.clap_detector.process_event(chunk)
+                    if c_event == ClapResult.SINGLE:
+                        voice_logger.info("Single clap detected during SPEAKING: silencing assistant and closing window")
+                        self._emit_window_action("close", source="single_clap")
+                        self.tts.stop()
+                        self.rearm()
+                        return None
+
                 rms = calculate_rms(chunk)
                 noise_floor = getattr(self.wake_detector, "_noise_floor", 0.05) or 0.05
                 # Distinct acoustic onset during playback interrupts assistant speech and transitions to listening
@@ -170,17 +203,29 @@ class VoiceSession:
         elif self._state == VoiceState.SPEAKING and not self.tts.is_speaking():
             self.rearm()
 
-        # 1. State: IDLE - Monitor for wake word or dual-clap pattern
+        # 1. State: IDLE - Monitor for wake word or dual-clap / single-clap pattern
         if self._state == VoiceState.IDLE:
             chunk = self.audio.read_chunk()
             if not chunk:
                 return None
 
             wake_triggered = bool(self.wake_detector.process_frame(chunk))
-            clap_triggered = bool(self.clap_detector.process_frame(chunk)) if getattr(self, "clap_detector", None) else False
+            clap_event = ClapResult.NONE
+            if getattr(self, "clap_detector", None) and hasattr(self.clap_detector, "process_event"):
+                clap_event = self.clap_detector.process_event(chunk)
+            elif getattr(self, "clap_detector", None) and self.clap_detector.process_frame(chunk):
+                clap_event = ClapResult.DUAL
 
-            if wake_triggered or clap_triggered:
-                self.last_trigger_source = "dual_clap" if clap_triggered else "wake_word"
+            if clap_event == ClapResult.SINGLE:
+                voice_logger.info("Single clap detected while IDLE: closing GUI window")
+                self._emit_window_action("close", source="single_clap")
+                if hasattr(self.tts, "stop"):
+                    self.tts.stop()
+                return None
+
+            if wake_triggered or clap_event == ClapResult.DUAL:
+                self.last_trigger_source = "dual_clap" if clap_event == ClapResult.DUAL else "wake_word"
+                self._emit_window_action("open", source=self.last_trigger_source)
                 seed_audio, has_cmd = b"", False
                 if wake_triggered and hasattr(self.wake_detector, "consume_trigger_audio"):
                     seed_audio, has_cmd = self.wake_detector.consume_trigger_audio()
@@ -193,6 +238,27 @@ class VoiceSession:
             now = time.time()
             chunk = self.audio.read_chunk()
             if not chunk:
+                return None
+
+            # Check clap event during listening: single clap closes, dual clap resets listening
+            clap_event = ClapResult.NONE
+            if getattr(self, "clap_detector", None) and hasattr(self.clap_detector, "process_event"):
+                clap_event = self.clap_detector.process_event(chunk)
+            elif getattr(self, "clap_detector", None) and self.clap_detector.process_frame(chunk):
+                clap_event = ClapResult.DUAL
+
+            if clap_event == ClapResult.SINGLE:
+                voice_logger.info("Single clap detected while LISTENING: closing GUI window and returning to IDLE")
+                self._emit_window_action("close", source="single_clap")
+                if hasattr(self.tts, "stop"):
+                    self.tts.stop()
+                self.rearm()
+                return None
+            elif clap_event == ClapResult.DUAL:
+                self._emit_window_action("open", source="dual_clap")
+                self._audio_buffer.clear()
+                self._listen_start_time = now
+                self._last_speech_time = now
                 return None
 
             rms = calculate_rms(chunk)
@@ -212,6 +278,10 @@ class VoiceSession:
 
             # Enforce maximum recording boundary (no infinite recording)
             if total_elapsed >= self.config.max_recording_seconds:
+                if not self._has_detected_speech:
+                    voice_logger.info("Recording timed out with no speech detected; discarding ambient noise buffer.")
+                    self.rearm()
+                    return None
                 self._transition_to(VoiceState.PROCESSING)
                 utterance = bytes(self._audio_buffer)
                 self._audio_buffer.clear()

@@ -12,6 +12,8 @@ import time
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from maverick.activity.logger import ActivityLogger
+from maverick.agent.intent import IntentCategory
+from maverick.agent.orchestrator import MavenAgentCore
 from maverick.context.engine import ContextEngine
 from maverick.core.security import ConfirmationRequiredError
 from maverick.desktop.awareness import get_running_authorized_apps
@@ -163,6 +165,7 @@ class VoiceController:
         self.last_turn_metrics: Dict[str, Any] = {}
         self.memory = ContextMemory()
         self.planner = TaskPlanner(memory=self.memory)
+        self.agent_core = MavenAgentCore(memory=self.memory, planner=self.planner)
         self.active_plan: Optional[TaskPlan] = None
         self.vision = VisionController()
         self._conversation_history: List[Dict[str, str]] = []
@@ -258,10 +261,12 @@ class VoiceController:
             if joined:
                 mem_clause = f" Approved user context: {joined}."
         sys_prompt = (
-            f"You are Maven, a fast, calm, intelligent personal AI operating assistant. "
+            f"You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), the personal AI operating assistant to Sir (Pak Firza). "
+            f"Address the user with calm, dignified respect ('Sir' or 'Pak Firza'). "
+            f"You are razor-sharp, unflappable, understated, and subtly witty, prioritizing action and precision over fluff. "
             f"{lang_directive} {length_directive} "
-            f"Plain spoken text only — no markdown, bullet symbols, or code fences. "
-            f"Never call tools or shell commands for conversational questions; answer directly.{mem_clause}"
+            f"Plain spoken text only — no markdown, bullet symbols, asterisks, or code fences. "
+            f"Answer directly and concisely.{mem_clause}"
         )
         return sys_prompt, max_tokens, lang
 
@@ -750,6 +755,35 @@ class VoiceController:
             )
             return action_result, None
 
+        # Check MavenAgentCore for autonomous task planning, coding, diagnostics, and desktop execution
+        if hasattr(self, "agent_core") and self.agent_core:
+            try:
+                core_intent = self.agent_core.intent_classifier.classify(cmd_text)
+                if core_intent.category != IntentCategory.CONVERSATIONAL and not core_intent.is_ambiguous:
+                    core_res = self.agent_core.process_instruction(cmd_text, confirmed=confirmed, source="voice")
+                    if core_res and core_res.get("status") in ("success", "completed", "awaiting_approval"):
+                        spoken_resp = self._format_core_spoken_response(
+                            core_res,
+                            is_id=(self._resolve_response_language(cmd_text) == "id"),
+                        )
+                        core_res["response"] = spoken_resp
+                        core_res["route"] = "agent_core"
+                        core_res["dispatch_ms"] = round((time.perf_counter() - t_local) * 1000.0, 1)
+                        if core_res.get("status") == "awaiting_approval":
+                            voice_logger.action_confirmation_required(app_id=cmd_text, prompt=spoken_resp)
+                        else:
+                            voice_logger.action_complete(action=core_intent.action, status=core_res.get("status"), response=spoken_resp)
+                        self.logger.log_action(
+                            action_type="agent_action",
+                            target=cmd_text,
+                            status=core_res.get("status"),
+                            confirmed=confirmed,
+                            details=core_res,
+                        )
+                        return core_res, None
+            except Exception as exc:
+                voice_logger.warning(f"Agent core voice dispatch warning: {exc}")
+
         if self.config.enable_openclaw_fallback:
             metrics: Dict[str, Any] = {}
             sentence_iter = self.stream_openclaw(cmd_text, metrics_out=metrics)
@@ -759,6 +793,57 @@ class VoiceController:
             "status": "unhandled",
             "response": "I didn't understand that instruction. How can I assist you with your desktop?",
         }, None
+
+    def _format_core_spoken_response(self, core_res: Dict[str, Any], is_id: bool = True) -> str:
+        """Format an executed MavenAgentCore result into a calm, crisp J.A.R.V.I.S. spoken reply."""
+        st = core_res.get("status")
+        intent_data = core_res.get("intent", {})
+        action = intent_data.get("action", "")
+
+        if st == "awaiting_approval":
+            reason = core_res.get("reason", "This action requires authorization.")
+            if is_id:
+                return f"Tindakan ini memerlukan konfirmasi Anda, Sir: {reason}. Katakan 'konfirmasi' untuk melanjutkan."
+            return f"This action requires your confirmation, Sir: {reason}. Say 'confirm' to proceed."
+
+        # Diagnostics / System Telemetry
+        if action in ("system_cpu", "system_ram", "system_battery", "system_status") or "summary" in (core_res.get("result") or {}):
+            res_obj = core_res.get("result") or {}
+            summary = res_obj.get("summary") or {}
+            res_data = summary.get("resources", {})
+            cpu_pct = res_data.get("cpu", {}).get("usage_percent")
+            mem_data = res_data.get("memory", {})
+            ram_avail = mem_data.get("available_gb")
+            bat_pct = summary.get("battery", {}).get("percent")
+
+            parts = []
+            if cpu_pct is not None:
+                parts.append(f"CPU di {cpu_pct} persen" if is_id else f"CPU at {cpu_pct} percent")
+            if ram_avail is not None:
+                parts.append(f"RAM tersedia {ram_avail} gigabyte" if is_id else f"{ram_avail} gigabytes RAM available")
+            if bat_pct is not None:
+                parts.append(f"baterai {bat_pct} persen" if is_id else f"battery at {bat_pct} percent")
+
+            details = ", ".join(parts) if parts else "seluruh subsistem nominal"
+            if is_id:
+                return f"Diagnostik sistem selesai, Sir. {details}."
+            return f"System diagnostics complete, Sir. {details}."
+
+        # Task Plan Execution
+        exec_data = core_res.get("execution") or {}
+        if exec_data and exec_data.get("summary"):
+            plan_summary = exec_data.get("summary")
+            if is_id:
+                return f"Tugas berhasil diselesaikan, Sir. {plan_summary}"
+            return f"Task completed successfully, Sir. {plan_summary}"
+
+        if core_res.get("message"):
+            msg = core_res.get("message")
+            if is_id:
+                return f"Sudah dijalankan, Sir. {msg}"
+            return f"Executed, Sir. {msg}"
+
+        return "Tugas berhasil diselesaikan, Sir." if is_id else "All tasks completed successfully, Sir."
 
     def _route_desktop_action(self, cmd: str, confirmed: bool = False) -> Optional[Dict[str, Any]]:
         """Route speech command to Maverick's secure desktop automation subsystems using BilingualIntentClassifier."""

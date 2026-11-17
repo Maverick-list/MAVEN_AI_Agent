@@ -101,6 +101,7 @@ def save_voice_settings(updates: Dict[str, Any], settings_file: str = VOICE_SETT
     allowed_keys = {
         "tts_engine",
         "tts_default_language",
+        "stt_language",
         "local_neural_voice",
         "local_neural_temperature",
         "local_neural_eos_threshold",
@@ -200,7 +201,7 @@ class VoiceConfig:
     whisper_server_host: str = "127.0.0.1"
     whisper_server_port: int = 18791
     use_whisper_server: bool = True
-    stt_language: str = "auto"  # Understand English & Indonesian input seamlessly
+    stt_language: str = "id"  # Prioritize Indonesian speech recognition
     whisper_threads: int = 8
 
     # Wake word settings
@@ -270,9 +271,9 @@ class VoiceConfig:
 
     # Dual-Clap Detection & Ambient Presence
     enable_clap_detection: bool = True
-    clap_min_interval_sec: float = 0.18
-    clap_max_interval_sec: float = 0.75
-    clap_cooldown_sec: float = 2.0
+    clap_min_interval_sec: float = 0.15
+    clap_max_interval_sec: float = 0.50
+    clap_cooldown_sec: float = 1.0
     clap_sensitivity: float = 0.65
 
     # Boot Greeting & Quiet Hours

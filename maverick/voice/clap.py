@@ -9,13 +9,23 @@ from maverick.voice.config import VoiceConfig
 from maverick.voice.observability import voice_logger
 
 
+class ClapResult:
+    """Acoustic clap event types."""
+    NONE = "none"
+    SINGLE = "single"
+    DUAL = "dual"
+
+
 class DualClapDetector:
     """
-    Lightweight, completely local dual-clap acoustic pattern detector.
-    Analyzes high-crest impulsive acoustic energy envelopes to detect two distinct
-    hand claps occurring within a natural human cadence window (180ms - 750ms).
-    Decisively distinguishes claps from typing, door impacts, coughing, speech,
-    and background music beats using crest-factor and decay-rate gating.
+    Lightweight, completely local dual-clap and single-clap acoustic pattern detector.
+    Analyzes high-crest impulsive acoustic energy envelopes to detect:
+    1. Dual-clap: two distinct hand claps occurring within natural cadence (180ms - 750ms).
+       Action: open GUI window and start listening.
+    2. Single-clap: exactly one hand clap followed by decay and timeout (> 750ms).
+       Action: close GUI window and return to IDLE.
+    Decisively distinguishes genuine hand claps from typing, door impacts, table knocks,
+    coughing, speech, and background noise using FFT spectral ratio and crest factor.
     Requires zero internet connectivity and operates entirely in RAM.
     """
 
@@ -48,11 +58,11 @@ class DualClapDetector:
         self.reset()
 
     def enable(self) -> None:
-        """Enable dual-clap detection."""
+        """Enable clap detection."""
         self.enabled = True
 
     def disable(self) -> None:
-        """Disable dual-clap detection."""
+        """Disable clap detection."""
         self.enabled = False
         self.reset()
 
@@ -62,11 +72,15 @@ class DualClapDetector:
 
     def _is_clap_impulse(self, frame_bytes: bytes, rms: float) -> bool:
         """
-        Evaluate if an audio frame represents a high-crest impulsive hand clap.
-        A clap has high peak amplitude relative to RMS (crest factor > 2.8) and
-        sharp rise above the ambient noise floor.
+        Evaluate if an audio frame represents a genuine acoustic hand clap.
+        Strictly discriminates hand claps from table knocks, bumps, and speech:
+        1. Crest factor: sharp transient peak relative to RMS (crest >= 2.8).
+        2. Absolute peak threshold: must be loud enough (peak >= 0.20).
+        3. Spectral acoustic signature: hand claps possess dominant acoustic energy
+           in the high snap frequencies (1200 Hz - 5500 Hz), whereas table knocks,
+           desk taps, and thuds have almost all energy concentrated below 900 Hz.
         """
-        if len(frame_bytes) < 4:
+        if len(frame_bytes) < 32:
             return False
 
         try:
@@ -78,30 +92,52 @@ class DualClapDetector:
         # Crest factor (peak to RMS ratio)
         crest_factor = peak / (rms + 1e-5)
 
-        # Ambient threshold requirement: energy must rise significantly above noise floor
-        # Sensitivity scales the required delta: higher sensitivity = lower delta requirement
-        required_delta = max(0.04, self._noise_floor * max(0.5, (1.6 - self.sensitivity)))
+        # Baseline amplitude check: genuine hand claps produce sharp peaks
+        if peak < 0.20 or crest_factor < 2.8:
+            return False
+
+        # Energy must decisively rise above noise floor
         delta = rms - self._noise_floor
+        required_delta = max(0.04, self._noise_floor * 0.8)
+        if delta < required_delta:
+            return False
 
-        # Claps exhibit high crest factor (> 2.5) and a sharp impulsive peak (> 0.20)
-        if delta >= required_delta and crest_factor >= 2.5 and peak >= 0.20:
-            return True
+        # Spectral discrimination: Hand Clap vs Table Knock/Thud
+        try:
+            fft_mag = np.abs(np.fft.rfft(samples))
+            freqs = np.fft.rfftfreq(len(samples), 1.0 / 16000.0)
 
-        return False
+            low_band = (freqs >= 100) & (freqs < 900)
+            high_band = (freqs >= 1200) & (freqs <= 5500)
 
-    def process_frame(self, frame_bytes: bytes) -> bool:
+            e_low = float(np.sum(fft_mag[low_band] ** 2)) + 1e-6
+            e_high = float(np.sum(fft_mag[high_band] ** 2)) + 1e-6
+
+            # Real hand claps have high-frequency snap energy >= 0.45 * low-frequency energy
+            # Table knocks and thuds typically have e_high / e_low < 0.15
+            if (e_high / e_low) < 0.45:
+                return False
+        except Exception:
+            return False
+
+        return True
+
+    def process_event(self, frame_bytes: bytes) -> str:
         """
         Process an incoming audio chunk (16kHz S16LE PCM).
-        Returns True if a valid two-clap cadence is detected.
+        Returns:
+            ClapResult.DUAL: if two valid claps occur within cadence (180ms - 750ms).
+            ClapResult.SINGLE: if one valid clap occurred and timed out with no second clap.
+            ClapResult.NONE: no event detected.
         """
         if not self.enabled or not frame_bytes or len(frame_bytes) < 4:
-            return False
+            return ClapResult.NONE
 
         now = time.time()
 
-        # Enforce debounce cooldown after a successful dual-clap trigger
+        # Enforce debounce cooldown after a trigger
         if (now - self._last_trigger_time) < self.cooldown:
-            return False
+            return ClapResult.NONE
 
         rms = calculate_rms(frame_bytes)
         is_impulse = self._is_clap_impulse(frame_bytes, rms)
@@ -122,13 +158,11 @@ class DualClapDetector:
         if len(self._recent_rms) > 10:
             self._recent_rms.pop(0)
 
-        is_impulse = self._is_clap_impulse(frame_bytes, rms)
-
         # State 1: We are waiting for the second clap
         if self._first_clap_time > 0.0:
             elapsed = now - self._first_clap_time
 
-            # If elapsed time exceeds max cadence window, the first clap timed out
+            # If elapsed time exceeds max cadence window, the first clap timed out -> confirmed SINGLE CLAP!
             if elapsed > self.max_interval:
                 self.reset()
                 # Check if current frame could be a new first clap
@@ -136,12 +170,15 @@ class DualClapDetector:
                     self._first_clap_time = now
                     self._first_clap_energy = rms
                     self._saw_decay_after_first = False
-                return False
+                    return ClapResult.NONE
 
-            # Require inter-clap energy decay (silence between claps)
-            if not self._saw_decay_after_first:
-                if rms < (self._first_clap_energy * 0.60):
-                    self._saw_decay_after_first = True
+                # Confirm SINGLE CLAP with small debounce so next dual-clap isn't locked out
+                self._last_trigger_time = now - max(0.0, self.cooldown - 0.25)
+                return ClapResult.SINGLE
+
+            # Any non-impulsive frame proves acoustic decay between claps
+            if not is_impulse or rms < (self._first_clap_energy * 0.75):
+                self._saw_decay_after_first = True
 
             # Check if second clap arrives within valid cadence window
             if elapsed >= self.min_interval:
@@ -149,15 +186,23 @@ class DualClapDetector:
                     # Dual clap verified!
                     self._last_trigger_time = now
                     self.reset()
-                    return True
+                    return ClapResult.DUAL
 
-            return False
+            return ClapResult.NONE
 
         # State 0: Waiting for the first clap
         if is_impulse:
             self._first_clap_time = now
             self._first_clap_energy = rms
             self._saw_decay_after_first = False
-            return False
+            return ClapResult.NONE
 
-        return False
+        return ClapResult.NONE
+
+    def process_frame(self, frame_bytes: bytes) -> bool:
+        """
+        Process an incoming audio chunk (16kHz S16LE PCM).
+        Backward compatible helper: Returns True if a dual-clap cadence is detected.
+        """
+        return self.process_event(frame_bytes) == ClapResult.DUAL
+

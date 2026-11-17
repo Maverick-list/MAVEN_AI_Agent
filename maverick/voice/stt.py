@@ -72,8 +72,14 @@ class WhisperCppSTTProvider(STTProvider):
         "amara.org",
         "terima kasih telah menonton",
         "jangan lupa subscribe",
+        "belencis",
+        "mamaha",
+        "sous-titres",
+        "transcription",
+        "subtítulos",
     )
-    _REPEAT_LOOP_RE = re.compile(r"\b([a-zA-Z]{2,})(?:[\s,.\-!?;:]+\1\b){3,}", re.IGNORECASE)
+    _REPEAT_LOOP_RE = re.compile(r"\b([a-zA-Z]{2,})(?:[\s,.\-!?;:]+\1\b){2,}", re.IGNORECASE)
+    _STUTTER_DEDUP_RE = re.compile(r"\b(\w+)(?:\s+\1\b)+", re.IGNORECASE)
 
     @classmethod
     def is_noise_hallucination(cls, text: str) -> bool:
@@ -118,11 +124,13 @@ class WhisperCppSTTProvider(STTProvider):
 
     @classmethod
     def _clean_transcript(cls, raw_output: str) -> str:
-        """Strip non-speech tags, quotes, and ambient-noise hallucinations."""
+        """Strip non-speech tags, quotes, duplicate stutters, and ambient-noise hallucinations."""
         cleaned = re.sub(r"\[.*?\]|\(.*?\)", "", (raw_output or "").strip()).strip()
         cleaned = re.sub(r"^[\"'\s]+|[\"'\s]+$", "", cleaned).strip()
         if not cleaned or cls.is_noise_hallucination(cleaned):
             return ""
+        # Collapse stuttered duplicate words (e.g., 'kamu kamu' -> 'kamu')
+        cleaned = cls._STUTTER_DEDUP_RE.sub(r"\1", cleaned)
         return cleaned
 
     def _transcribe_via_server(
